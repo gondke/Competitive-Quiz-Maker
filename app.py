@@ -3,7 +3,6 @@ import pandas as pd
 import json
 import os
 import random
-import string
 
 # Page configuration
 st.set_page_config(page_title="National Testing Portal - Mock Exam", layout="wide")
@@ -40,8 +39,8 @@ def save_active_quiz(quiz_data):
     with open(QUIZ_FILE, "w", encoding="utf-8") as f:
         json.dump(quiz_data, f, indent=4)
 
-def generate_otp_code(length=6):
-    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
+def generate_numeric_session_code(length=6):
+    return ''.join(random.choices("0123456789", k=length))
 
 # ---------------------------------------------------------
 # SESSION STATE INITIALIZATION
@@ -64,7 +63,12 @@ if "current_quiz" not in st.session_state:
     st.session_state.current_quiz = active_quiz_data.get("quiz", [])
 
 if "session_code" not in st.session_state:
-    st.session_state.session_code = active_quiz_data.get("session_code", generate_otp_code())
+    # Initialize with saved numeric code or generate a new 6-digit numeric code
+    saved_code = active_quiz_data.get("session_code", None)
+    if saved_code and str(saved_code).isdigit():
+        st.session_state.session_code = str(saved_code)
+    else:
+        st.session_state.session_code = generate_numeric_session_code()
 
 if "marking_scheme" not in st.session_state:
     st.session_state.marking_scheme = active_quiz_data.get(
@@ -139,7 +143,7 @@ elif st.session_state.portal_role == "Student":
 
     latest_quiz_data = load_active_quiz()
     published_quiz = latest_quiz_data.get("quiz", [])
-    valid_session_code = latest_quiz_data.get("session_code", st.session_state.session_code)
+    valid_session_code = str(latest_quiz_data.get("session_code", st.session_state.session_code))
 
     if not published_quiz:
         st.warning("No active quiz available at the moment. Please ask your instructor to configure and publish a test.")
@@ -212,7 +216,7 @@ elif st.session_state.portal_role == "Student":
     elif not st.session_state.quiz_active:
         st.subheader("Candidate Login")
         
-        input_code = st.text_input("Enter Exam Session Code:")
+        input_code = st.text_input("Enter Numeric Exam Session Code:")
         candidate_name = st.text_input("Candidate Name:")
         
         if st.button("Start Examination", type="primary"):
@@ -440,16 +444,27 @@ elif st.session_state.portal_role == "Teacher":
 
         # TAB 2: QUIZ CONFIGURATION
         with tab2:
-            st.subheader("Configure Exam Rules & Session Code")
+            st.subheader("Configure Exam Rules & Numeric Session Code")
             
             c_code1, c_code2 = st.columns([2, 1])
             with c_code1:
-                st.text_input("Active Exam Session Code", value=st.session_state.session_code, disabled=True)
+                st.text_input("Active Numeric Exam Session Code", value=st.session_state.session_code, disabled=True)
             with c_code2:
                 st.write(" ")
                 st.write(" ")
-                if st.button("Generate New Code", type="secondary"):
-                    st.session_state.session_code = generate_otp_code()
+                if st.button("Generate New Numeric Code", type="secondary"):
+                    new_code = generate_numeric_session_code()
+                    st.session_state.session_code = new_code
+                    
+                    # Update active quiz persistence file if a quiz exists
+                    if st.session_state.current_quiz:
+                        quiz_payload = {
+                            "session_code": new_code,
+                            "quiz": st.session_state.current_quiz,
+                            "marking_scheme": st.session_state.marking_scheme,
+                            "cutoff_score": st.session_state.cutoff_score
+                        }
+                        save_active_quiz(quiz_payload)
                     st.rerun()
 
             st.divider()
@@ -489,7 +504,7 @@ elif st.session_state.portal_role == "Teacher":
             if st.session_state.current_quiz:
                 st.divider()
                 st.subheader("📢 Active Quiz Access Information")
-                st.metric("Current Exam Session Code", st.session_state.session_code)
+                st.metric("Current Numeric Session Code", st.session_state.session_code)
                 st.write(f"**Total Questions Published:** {len(st.session_state.current_quiz)}")
 
         # TAB 3: QUIZ DEMO / PREVIEW
