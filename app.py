@@ -39,6 +39,13 @@ if "cutoff_score" not in st.session_state:
 if "session_code" not in st.session_state:
     st.session_state.session_code = "GATE-2026-TEST"
 
+# Function to generate QR Image bytes
+def generate_qr(data_str):
+    qr = qrcode.make(data_str)
+    buf = BytesIO()
+    qr.save(buf)
+    return buf.getvalue()
+
 # ---------------------------------------------------------
 # CSS FOR EXAM PALETTE & UI REPLICATION
 # ---------------------------------------------------------
@@ -221,18 +228,28 @@ if sidebar_mode == "Admin / Instructor Portal":
                 st.session_state.quiz_active = False
                 st.success(f"Quiz successfully generated with {len(selected_qs)} questions!")
 
+        # Display generated Quiz Join Info right away if quiz is available
+        if st.session_state.current_quiz:
+            st.divider()
+            st.subheader("📢 Active Quiz Access Information")
+            st.info(f"Give students the session code or display this QR code to let them join:")
+            col_info, col_qr = st.columns([2, 1])
+            with col_info:
+                st.metric("Exam Session Code", st.session_state.session_code)
+                st.write(f"**Total Questions Selected:** {len(st.session_state.current_quiz)}")
+            with col_qr:
+                qr_bytes = generate_qr(st.session_state.session_code)
+                st.image(qr_bytes, caption=f"Scan to Join Code: {st.session_state.session_code}", width=180)
+
     # -----------------------------------------------------
     # TAB 3: SESSION CODE & QR GENERATION
     # -----------------------------------------------------
     with tab3:
-        st.subheader("Student Joining Info")
+        st.subheader("Student Joining Info Settings")
         st.session_state.session_code = st.text_input("Session Code", value=st.session_state.session_code)
         
-        qr_data = f"Exam Session Code: {st.session_state.session_code}"
-        qr = qrcode.make(qr_data)
-        buf = BytesIO()
-        qr.save(buf)
-        st.image(buf.getvalue(), caption="Scan QR Code to retrieve Session Code", width=200)
+        qr_bytes = generate_qr(st.session_state.session_code)
+        st.image(qr_bytes, caption=f"Scan QR Code to retrieve Session Code: {st.session_state.session_code}", width=200)
 
 # =========================================================
 # STUDENT EXAM PORTAL
@@ -312,11 +329,11 @@ else:
         # LOGIN / SESSION VERIFICATION
         # -------------------------------------------------
         st.subheader("Enter Details to Start Test")
-        input_code = st.text_input("Enter Session Code or Scan QR:")
+        input_code = st.text_input("Enter Session Code or Code Scanned from QR:")
         candidate_name = st.text_input("Candidate Name:")
         
         if st.button("Start Examination"):
-            if input_code == st.session_state.session_code and candidate_name.strip():
+            if input_code.strip() == st.session_state.session_code and candidate_name.strip():
                 st.session_state.quiz_active = True
                 st.rerun()
             else:
