@@ -3,10 +3,24 @@ import pandas as pd
 import qrcode
 import json
 import os
+import socket
 from io import BytesIO
 
 # Page configuration
 st.set_page_config(page_title="National Testing Portal - Mock Exam", layout="wide")
+
+# ---------------------------------------------------------
+# HELPER TO GET LOCAL NETWORK IP ADDRESS
+# ---------------------------------------------------------
+def get_local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return f"http://{ip}:8501"
+    except Exception:
+        return "http://localhost:8501"
 
 # ---------------------------------------------------------
 # FILE STORAGE FOR PERMANENT QUESTION BANK & ACTIVE QUIZ
@@ -43,6 +57,12 @@ def save_active_quiz(quiz_data):
 # ---------------------------------------------------------
 # SESSION STATE INITIALIZATION
 # ---------------------------------------------------------
+if "portal_role" not in st.session_state:
+    st.session_state.portal_role = None
+
+if "admin_authenticated" not in st.session_state:
+    st.session_state.admin_authenticated = False
+
 if "question_bank" not in st.session_state:
     st.session_state.question_bank = load_question_bank()
 
@@ -77,7 +97,6 @@ if "user_responses" not in st.session_state:
 if "question_states" not in st.session_state:
     st.session_state.question_states = {}
 
-# Helper to generate QR Image bytes
 def generate_qr(data_str):
     qr = qrcode.make(data_str)
     buf = BytesIO()
@@ -89,7 +108,7 @@ def generate_qr(data_str):
 # ---------------------------------------------------------
 st.markdown("""
     <style>
-    .exam-header { background-color: #003366; color: white; padding: 10px; font-size: 20px; font-weight: bold; }
+    .exam-header { background-color: #003366; color: white; padding: 12px; font-size: 22px; font-weight: bold; text-align: center; margin-bottom: 20px;}
     .status-btn { width: 100%; border: none; padding: 8px; margin: 2px; color: white; font-weight: bold; border-radius: 4px; }
     .btn-answered { background-color: #28a745; }
     .btn-not-answered { background-color: #dc3545; }
@@ -98,235 +117,53 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# Detect QR code query parameters automatically
+query_params = st.query_params
+if "code" in query_params and st.session_state.portal_role is None:
+    st.session_state.portal_role = "Student"
+
 # ---------------------------------------------------------
-# NAVIGATION & MODE SELECTION
+# LANDING PAGE: ROLE SELECTION
 # ---------------------------------------------------------
-sidebar_mode = st.sidebar.radio("Select Portal Role", ["Admin / Instructor Portal", "Student Exam Portal"])
+if st.session_state.portal_role is None:
+    st.markdown('<div class="exam-header">National Testing Portal - Online Examination System</div>', unsafe_allow_html=True)
+    st.subheader("Welcome! Please select your portal type to continue:")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info("### Student Portal\nAttempt mock tests and view result analysis.")
+        if st.button("Enter Student Portal", use_container_width=True, type="primary"):
+            st.session_state.portal_role = "Student"
+            st.rerun()
+            
+    with col2:
+        st.warning("### Instructor / Teacher Portal\nManage question bank, publish quizzes, and generate access codes.")
+        if st.button("Enter Instructor Portal", use_container_width=True):
+            st.session_state.portal_role = "Teacher"
+            st.rerun()
 
 # =========================================================
-# ADMIN / INSTRUCTOR PORTAL
+# 1. STUDENT PORTAL (TEACHER PORTAL STRICTLY HIDDEN)
 # =========================================================
-if sidebar_mode == "Admin / Instructor Portal":
-    st.title("Instructor Control Center")
-    tab1, tab2, tab3 = st.tabs(["Question Bank Management", "Quiz Configuration", "Session & QR Code"])
+elif st.session_state.portal_role == "Student":
+    # Header with exit button
+    head_col1, head_col2 = st.columns([6, 1])
+    with head_col1:
+        st.markdown('<div class="exam-header">IIT JAM / GATE / CSIR NET Student Examination Portal</div>', unsafe_allow_html=True)
+    with head_col2:
+        if st.button("Change Portal"):
+            st.session_state.portal_role = None
+            st.session_state.quiz_active = False
+            st.session_state.quiz_submitted = False
+            st.rerun()
 
-    # -----------------------------------------------------
-    # TAB 1: QUESTION BANK MANAGEMENT (ADD / EDIT)
-    # -----------------------------------------------------
-    with tab1:
-        editing = st.session_state.editing_idx is not None
-        if editing:
-            st.subheader(f"Edit Question #{st.session_state.editing_idx + 1}")
-            q_to_edit = st.session_state.question_bank[st.session_state.editing_idx]
-        else:
-            st.subheader("Add New LaTeX Question")
-            q_to_edit = None
-
-        with st.form("question_form", clear_on_submit=False):
-            default_type = q_to_edit["type"] if editing else "MCQ"
-            type_options = ["MCQ", "MSQ", "NAT"]
-            type_idx = type_options.index(default_type) if default_type in type_options else 0
-            
-            q_type = st.selectbox("Question Type", type_options, index=type_idx)
-            
-            default_text = q_to_edit["text"] if editing else ""
-            q_text = st.text_area("Question Text (LaTeX supported, e.g., $f(x) = \\int_{0}^{x} t^2 dt$):", value=default_text)
-            
-            opts = []
-            nat_answer = 0.0
-            correct_opts = []
-
-            if q_type in ["MCQ", "MSQ"]:
-                col1, col2 = st.columns(2)
-                def_opts = q_to_edit["options"] if editing and len(q_to_edit.get("options", [])) == 4 else ["", "", "", ""]
-                with col1:
-                    opt_a = st.text_input("Option A (LaTeX allowed)", value=def_opts[0])
-                    opt_b = st.text_input("Option B (LaTeX allowed)", value=def_opts[1])
-                with col2:
-                    opt_c = st.text_input("Option C (LaTeX allowed)", value=def_opts[2])
-                    opt_d = st.text_input("Option D (LaTeX allowed)", value=def_opts[3])
-                opts = [opt_a, opt_b, opt_c, opt_d]
-
-                if q_type == "MCQ":
-                    default_corr = q_to_edit["correct"][0] if editing and isinstance(q_to_edit["correct"], list) and q_to_edit["correct"] else "Option A"
-                    corr_options = ["Option A", "Option B", "Option C", "Option D"]
-                    corr_idx = corr_options.index(default_corr) if default_corr in corr_options else 0
-                    correct_opts = [st.selectbox("Correct Option", corr_options, index=corr_idx)]
-                else:
-                    st.write("Select All Correct Options (MSQ):")
-                    c1, c2, c3, c4 = st.columns(4)
-                    correct_opts = []
-                    prev_corr = q_to_edit["correct"] if editing and isinstance(q_to_edit["correct"], list) else []
-                    if c1.checkbox("A", value=("Option A" in prev_corr)): correct_opts.append("Option A")
-                    if c2.checkbox("B", value=("Option B" in prev_corr)): correct_opts.append("Option B")
-                    if c3.checkbox("C", value=("Option C" in prev_corr)): correct_opts.append("Option C")
-                    if c4.checkbox("D", value=("Option D" in prev_corr)): correct_opts.append("Option D")
-            else:
-                default_nat = float(q_to_edit["correct"]) if editing and q_to_edit["correct"] is not None else 0.0
-                nat_answer = st.number_input("Numerical Correct Answer", value=default_nat, step=0.01)
-
-            btn_label = "Update Question" if editing else "Add Question to Bank"
-            submitted = st.form_submit_button(btn_label)
-
-            if submitted and q_text.strip():
-                updated_data = {
-                    "id": q_to_edit["id"] if editing else len(st.session_state.question_bank) + 1,
-                    "type": q_type,
-                    "text": q_text,
-                    "options": opts,
-                    "correct": correct_opts if q_type in ["MCQ", "MSQ"] else nat_answer,
-                    "selected": q_to_edit["selected"] if editing else False
-                }
-                
-                if editing:
-                    st.session_state.question_bank[st.session_state.editing_idx] = updated_data
-                    st.session_state.editing_idx = None
-                    save_question_bank(st.session_state.question_bank)
-                    st.success("Question updated successfully!")
-                else:
-                    st.session_state.question_bank.append(updated_data)
-                    save_question_bank(st.session_state.question_bank)
-                    st.success("Question successfully added!")
-                st.rerun()
-
-        if editing:
-            if st.button("Cancel Edit"):
-                st.session_state.editing_idx = None
-                st.rerun()
-
-        st.divider()
-        st.subheader("Question Bank Repository")
-        
-        if st.session_state.question_bank:
-            to_delete = []
-            for idx, q in enumerate(st.session_state.question_bank):
-                cols = st.columns([0.5, 0.5, 6, 1, 1])
-                q["selected"] = cols[0].checkbox("", value=q["selected"], key=f"select_{idx}")
-                cols[1].write(f"**Q{idx+1} ({q['type']})**")
-                
-                with cols[2]:
-                    st.write(f"**Question:** {q['text']}")
-                    if q['type'] in ["MCQ", "MSQ"]:
-                        labels = ["A", "B", "C", "D"]
-                        for lbl, opt in zip(labels, q['options']):
-                            st.write(f"- ({lbl}) {opt}")
-                        st.write(f"*Correct Answer(s):* {', '.join(q['correct'])}")
-                    else:
-                        st.write(f"*Correct Answer:* {q['correct']}")
-
-                if cols[3].button("Edit", key=f"edit_{idx}"):
-                    st.session_state.editing_idx = idx
-                    st.rerun()
-
-                if cols[4].button("Delete", key=f"del_{idx}"):
-                    to_delete.append(idx)
-
-            if to_delete:
-                for idx in sorted(to_delete, reverse=True):
-                    st.session_state.question_bank.pop(idx)
-                    if st.session_state.editing_idx == idx:
-                        st.session_state.editing_idx = None
-                save_question_bank(st.session_state.question_bank)
-                st.rerun()
-        else:
-            st.info("No questions added to the bank yet.")
-
-    # -----------------------------------------------------
-    # TAB 2: QUIZ CONFIGURATION & MARKING SCHEME
-    # -----------------------------------------------------
-    with tab2:
-        st.subheader("Configure Exam Rules & Marking Scheme")
-        
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            mcq_pos = st.number_input("MCQ Correct Marks", value=1.0)
-            mcq_neg = st.number_input("MCQ Negative Marks", value=-0.33)
-        with c2:
-            msq_pos = st.number_input("MSQ Correct Marks", value=2.0)
-            msq_neg = st.number_input("MSQ Negative Marks", value=0.0)
-        with c3:
-            nat_pos = st.number_input("NAT Correct Marks", value=2.0)
-            nat_neg = st.number_input("NAT Negative Marks", value=0.0)
-
-        st.session_state.marking_scheme = {
-            "MCQ": (mcq_pos, mcq_neg),
-            "MSQ": (msq_pos, msq_neg),
-            "NAT": (nat_pos, nat_neg)
-        }
-
-        st.session_state.cutoff_score = st.number_input("Pass Cutoff Score", value=5.0)
-
-        if st.button("Generate & Publish Quiz"):
-            selected_qs = [q for q in st.session_state.question_bank if q["selected"]]
-            if not selected_qs:
-                st.warning("Please select at least one question from the Question Bank tab using checkboxes.")
-            else:
-                st.session_state.current_quiz = selected_qs
-                
-                # Save published quiz globally for all student sessions
-                quiz_payload = {
-                    "session_code": st.session_state.session_code,
-                    "quiz": selected_qs,
-                    "marking_scheme": st.session_state.marking_scheme,
-                    "cutoff_score": st.session_state.cutoff_score
-                }
-                save_active_quiz(quiz_payload)
-                
-                st.success(f"Quiz successfully generated and published globally with {len(selected_qs)} questions!")
-
-        # Display active quiz info if available
-        if st.session_state.current_quiz:
-            st.divider()
-            st.subheader("📢 Active Quiz Access Information")
-            st.info("Give students the session code or display this QR code to let them join:")
-            
-            app_url = st.text_input("Server App URL for QR (e.g., http://192.168.1.5:8501 or deployed URL)", value="http://localhost:8501")
-            qr_target = f"{app_url}?code={st.session_state.session_code}"
-            
-            col_info, col_qr = st.columns([2, 1])
-            with col_info:
-                st.metric("Exam Session Code", st.session_state.session_code)
-                st.write(f"**Total Questions Published:** {len(st.session_state.current_quiz)}")
-            with col_qr:
-                qr_bytes = generate_qr(qr_target)
-                st.image(qr_bytes, caption="Scan QR to open Exam Portal", width=180)
-
-    # -----------------------------------------------------
-    # TAB 3: SESSION CODE & QR GENERATION
-    # -----------------------------------------------------
-    with tab3:
-        st.subheader("Student Joining Info Settings")
-        new_code = st.text_input("Session Code", value=st.session_state.session_code)
-        
-        if new_code != st.session_state.session_code:
-            st.session_state.session_code = new_code
-            if st.session_state.current_quiz:
-                quiz_payload = {
-                    "session_code": st.session_state.session_code,
-                    "quiz": st.session_state.current_quiz,
-                    "marking_scheme": st.session_state.marking_scheme,
-                    "cutoff_score": st.session_state.cutoff_score
-                }
-                save_active_quiz(quiz_payload)
-        
-        app_url_settings = st.text_input("Server Base URL for QR generation", value="http://localhost:8501", key="app_url_tab3")
-        qr_target_settings = f"{app_url_settings}?code={st.session_state.session_code}"
-        qr_bytes = generate_qr(qr_target_settings)
-        st.image(qr_bytes, caption=f"Scan QR Code to Join Session: {st.session_state.session_code}", width=200)
-
-# =========================================================
-# STUDENT EXAM PORTAL
-# =========================================================
-else:
-    st.markdown('<div class="exam-header">IIT JAM / GATE / CSIR NET Online Examination Portal</div>', unsafe_allow_html=True)
-
-    # Sync globally published quiz data
+    # Load active published quiz data
     latest_quiz_data = load_active_quiz()
     published_quiz = latest_quiz_data.get("quiz", [])
     valid_session_code = latest_quiz_data.get("session_code", st.session_state.session_code)
 
     if not published_quiz:
-        st.warning("No active quiz available. Please ask the instructor to configure and publish a quiz.")
+        st.warning("No active quiz available at the moment. Please ask your instructor to configure and publish a test.")
     elif st.session_state.quiz_submitted:
         # -------------------------------------------------
         # RESULT ANALYSIS PAGE
@@ -398,18 +235,15 @@ else:
 
     elif not st.session_state.quiz_active:
         # -------------------------------------------------
-        # LOGIN / SESSION VERIFICATION
+        # LOGIN FORM
         # -------------------------------------------------
-        st.subheader("Enter Details to Start Test")
+        st.subheader("Candidate Login")
         
-        # Read URL parameter if scanned via QR Code
-        query_params = st.query_params
         default_code_input = query_params.get("code", "")
-        
-        input_code = st.text_input("Enter Session Code or Code Scanned from QR:", value=default_code_input)
+        input_code = st.text_input("Enter Exam Session Code:", value=default_code_input)
         candidate_name = st.text_input("Candidate Name:")
         
-        if st.button("Start Examination"):
+        if st.button("Start Examination", type="primary"):
             if input_code.strip() == valid_session_code and candidate_name.strip():
                 st.session_state.current_quiz = published_quiz
                 st.session_state.question_states = {i: "not_visited" for i in range(len(published_quiz))}
@@ -417,36 +251,26 @@ else:
                 st.session_state.quiz_active = True
                 st.rerun()
             else:
-                st.error("Invalid Session Code or Candidate Name.")
+                st.error("Invalid Exam Session Code or Candidate Name.")
     else:
         # -------------------------------------------------
-        # LIVE EXAM INTERFACE (GATE/JAM PALETTE)
+        # LIVE EXAM INTERFACE
         # -------------------------------------------------
         if "curr_idx" not in st.session_state:
             st.session_state.curr_idx = 0
 
         curr_q = st.session_state.current_quiz[st.session_state.curr_idx]
-
         col_main, col_palette = st.columns([3, 1])
 
-        # Question Palette Panel (Right Side)
+        # Question Palette (Right Side)
         with col_palette:
             st.subheader("Question Palette")
-            
-            # Palette grid
             grid_cols = st.columns(4)
             for i in range(len(st.session_state.current_quiz)):
                 col_i = grid_cols[i % 4]
                 state = st.session_state.question_states.get(i, "not_visited")
-                
                 label = f"{i+1}"
-                if state == "answered":
-                    btn_type = "primary"
-                elif state == "review":
-                    btn_type = "secondary"
-                else:
-                    btn_type = "secondary"
-
+                
                 if col_i.button(label, key=f"pal_{i}", use_container_width=True):
                     st.session_state.curr_idx = i
                     if st.session_state.question_states[i] == "not_visited":
@@ -458,7 +282,7 @@ else:
                 st.session_state.quiz_submitted = True
                 st.rerun()
 
-        # Question Content Panel (Left Side)
+        # Question Panel (Left Side)
         with col_main:
             st.markdown(f"### Question No. {st.session_state.curr_idx + 1} ({curr_q['type']})")
             st.markdown(f"**{curr_q['text']}**")
@@ -467,12 +291,10 @@ else:
             q_idx = st.session_state.curr_idx
             existing_ans = st.session_state.user_responses.get(q_idx, None)
 
-            # Input controls based on question type
             if curr_q["type"] == "MCQ":
                 opts = curr_q["options"]
                 labels = ["Option A", "Option B", "Option C", "Option D"]
                 formatted_opts = [f"{lbl}: {opt}" for lbl, opt in zip(labels, opts)]
-                
                 default_idx = labels.index(existing_ans) if existing_ans in labels else None
                 sel = st.radio("Choose Option:", formatted_opts, index=default_idx, key=f"radio_{q_idx}")
                 selected_val = labels[formatted_opts.index(sel)] if sel else None
@@ -482,7 +304,6 @@ else:
                 labels = ["Option A", "Option B", "Option C", "Option D"]
                 opts = curr_q["options"]
                 selected_val = existing_ans if isinstance(existing_ans, list) else []
-                
                 updated_val = []
                 for lbl, opt in zip(labels, opts):
                     chk = st.checkbox(f"{lbl}: {opt}", value=(lbl in selected_val), key=f"msq_{q_idx}_{lbl}")
@@ -495,8 +316,6 @@ else:
                 selected_val = st.text_input("Enter Numerical Answer:", value=str(val), key=f"nat_{q_idx}")
 
             st.divider()
-
-            # Navigation buttons
             b1, b2, b3 = st.columns(3)
             if b1.button("Save & Next"):
                 st.session_state.user_responses[q_idx] = selected_val
@@ -516,3 +335,214 @@ else:
                 if st.session_state.curr_idx < len(st.session_state.current_quiz) - 1:
                     st.session_state.curr_idx += 1
                 st.rerun()
+
+# =========================================================
+# 2. INSTRUCTOR / TEACHER PORTAL
+# =========================================================
+elif st.session_state.portal_role == "Teacher":
+    st.sidebar.button("Switch Portal", on_click=lambda: st.session_state.update({"portal_role": None, "admin_authenticated": False}))
+    
+    # PIN Protection for Instructor Access
+    if not st.session_state.admin_authenticated:
+        st.title("Instructor Authentication")
+        pin_input = st.text_input("Enter Admin PIN to access Instructor Portal:", type="password")
+        if st.button("Login as Instructor"):
+            if pin_input == "1234":  # Default PIN
+                st.session_state.admin_authenticated = True
+                st.rerun()
+            else:
+                st.error("Incorrect PIN. Access denied.")
+    else:
+        st.title("Instructor Control Center")
+        tab1, tab2, tab3 = st.tabs(["Question Bank Management", "Quiz Configuration", "Session & QR Code"])
+
+        # TAB 1: QUESTION BANK MANAGEMENT
+        with tab1:
+            editing = st.session_state.editing_idx is not None
+            if editing:
+                st.subheader(f"Edit Question #{st.session_state.editing_idx + 1}")
+                q_to_edit = st.session_state.question_bank[st.session_state.editing_idx]
+            else:
+                st.subheader("Add New LaTeX Question")
+                q_to_edit = None
+
+            with st.form("question_form", clear_on_submit=False):
+                default_type = q_to_edit["type"] if editing else "MCQ"
+                type_options = ["MCQ", "MSQ", "NAT"]
+                type_idx = type_options.index(default_type) if default_type in type_options else 0
+                q_type = st.selectbox("Question Type", type_options, index=type_idx)
+                
+                default_text = q_to_edit["text"] if editing else ""
+                q_text = st.text_area("Question Text (LaTeX supported, e.g., $f(x) = \\int_{0}^{x} t^2 dt$):", value=default_text)
+                
+                opts = []
+                nat_answer = 0.0
+                correct_opts = []
+
+                if q_type in ["MCQ", "MSQ"]:
+                    col1, col2 = st.columns(2)
+                    def_opts = q_to_edit["options"] if editing and len(q_to_edit.get("options", [])) == 4 else ["", "", "", ""]
+                    with col1:
+                        opt_a = st.text_input("Option A (LaTeX allowed)", value=def_opts[0])
+                        opt_b = st.text_input("Option B (LaTeX allowed)", value=def_opts[1])
+                    with col2:
+                        opt_c = st.text_input("Option C (LaTeX allowed)", value=def_opts[2])
+                        opt_d = st.text_input("Option D (LaTeX allowed)", value=def_opts[3])
+                    opts = [opt_a, opt_b, opt_c, opt_d]
+
+                    if q_type == "MCQ":
+                        default_corr = q_to_edit["correct"][0] if editing and isinstance(q_to_edit["correct"], list) and q_to_edit["correct"] else "Option A"
+                        corr_options = ["Option A", "Option B", "Option C", "Option D"]
+                        corr_idx = corr_options.index(default_corr) if default_corr in corr_options else 0
+                        correct_opts = [st.selectbox("Correct Option", corr_options, index=corr_idx)]
+                    else:
+                        st.write("Select All Correct Options (MSQ):")
+                        c1, c2, c3, c4 = st.columns(4)
+                        correct_opts = []
+                        prev_corr = q_to_edit["correct"] if editing and isinstance(q_to_edit["correct"], list) else []
+                        if c1.checkbox("A", value=("Option A" in prev_corr)): correct_opts.append("Option A")
+                        if c2.checkbox("B", value=("Option B" in prev_corr)): correct_opts.append("Option B")
+                        if c3.checkbox("C", value=("Option C" in prev_corr)): correct_opts.append("Option C")
+                        if c4.checkbox("D", value=("Option D" in prev_corr)): correct_opts.append("Option D")
+                else:
+                    default_nat = float(q_to_edit["correct"]) if editing and q_to_edit["correct"] is not None else 0.0
+                    nat_answer = st.number_input("Numerical Correct Answer", value=default_nat, step=0.01)
+
+                btn_label = "Update Question" if editing else "Add Question to Bank"
+                submitted = st.form_submit_button(btn_label)
+
+                if submitted and q_text.strip():
+                    updated_data = {
+                        "id": q_to_edit["id"] if editing else len(st.session_state.question_bank) + 1,
+                        "type": q_type,
+                        "text": q_text,
+                        "options": opts,
+                        "correct": correct_opts if q_type in ["MCQ", "MSQ"] else nat_answer,
+                        "selected": q_to_edit["selected"] if editing else False
+                    }
+                    if editing:
+                        st.session_state.question_bank[st.session_state.editing_idx] = updated_data
+                        st.session_state.editing_idx = None
+                        save_question_bank(st.session_state.question_bank)
+                        st.success("Question updated successfully!")
+                    else:
+                        st.session_state.question_bank.append(updated_data)
+                        save_question_bank(st.session_state.question_bank)
+                        st.success("Question successfully added!")
+                    st.rerun()
+
+            if editing:
+                if st.button("Cancel Edit"):
+                    st.session_state.editing_idx = None
+                    st.rerun()
+
+            st.divider()
+            st.subheader("Question Bank Repository")
+            if st.session_state.question_bank:
+                to_delete = []
+                for idx, q in enumerate(st.session_state.question_bank):
+                    cols = st.columns([0.5, 0.5, 6, 1, 1])
+                    q["selected"] = cols[0].checkbox("", value=q["selected"], key=f"select_{idx}")
+                    cols[1].write(f"**Q{idx+1} ({q['type']})**")
+                    
+                    with cols[2]:
+                        st.write(f"**Question:** {q['text']}")
+                        if q['type'] in ["MCQ", "MSQ"]:
+                            labels = ["A", "B", "C", "D"]
+                            for lbl, opt in zip(labels, q['options']):
+                                st.write(f"- ({lbl}) {opt}")
+                            st.write(f"*Correct Answer(s):* {', '.join(q['correct'])}")
+                        else:
+                            st.write(f"*Correct Answer:* {q['correct']}")
+
+                    if cols[3].button("Edit", key=f"edit_{idx}"):
+                        st.session_state.editing_idx = idx
+                        st.rerun()
+
+                    if cols[4].button("Delete", key=f"del_{idx}"):
+                        to_delete.append(idx)
+
+                if to_delete:
+                    for idx in sorted(to_delete, reverse=True):
+                        st.session_state.question_bank.pop(idx)
+                        if st.session_state.editing_idx == idx:
+                            st.session_state.editing_idx = None
+                    save_question_bank(st.session_state.question_bank)
+                    st.rerun()
+            else:
+                st.info("No questions added to the bank yet.")
+
+        # TAB 2: QUIZ CONFIGURATION
+        with tab2:
+            st.subheader("Configure Exam Rules & Marking Scheme")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                mcq_pos = st.number_input("MCQ Correct Marks", value=1.0)
+                mcq_neg = st.number_input("MCQ Negative Marks", value=-0.33)
+            with c2:
+                msq_pos = st.number_input("MSQ Correct Marks", value=2.0)
+                msq_neg = st.number_input("MSQ Negative Marks", value=0.0)
+            with c3:
+                nat_pos = st.number_input("NAT Correct Marks", value=2.0)
+                nat_neg = st.number_input("NAT Negative Marks", value=0.0)
+
+            st.session_state.marking_scheme = {
+                "MCQ": (mcq_pos, mcq_neg),
+                "MSQ": (msq_pos, msq_neg),
+                "NAT": (nat_pos, nat_neg)
+            }
+            st.session_state.cutoff_score = st.number_input("Pass Cutoff Score", value=5.0)
+
+            if st.button("Generate & Publish Quiz"):
+                selected_qs = [q for q in st.session_state.question_bank if q["selected"]]
+                if not selected_qs:
+                    st.warning("Please select at least one question from the Question Bank tab using checkboxes.")
+                else:
+                    st.session_state.current_quiz = selected_qs
+                    quiz_payload = {
+                        "session_code": st.session_state.session_code,
+                        "quiz": selected_qs,
+                        "marking_scheme": st.session_state.marking_scheme,
+                        "cutoff_score": st.session_state.cutoff_score
+                    }
+                    save_active_quiz(quiz_payload)
+                    st.success(f"Quiz successfully generated and published globally with {len(selected_qs)} questions!")
+
+            if st.session_state.current_quiz:
+                st.divider()
+                st.subheader("📢 Active Quiz Access Information")
+                
+                auto_ip_url = get_local_ip()
+                app_url = st.text_input("Server Base URL for Mobile QR Access:", value=auto_ip_url)
+                qr_target = f"{app_url}?code={st.session_state.session_code}"
+                
+                col_info, col_qr = st.columns([2, 1])
+                with col_info:
+                    st.metric("Exam Session Code", st.session_state.session_code)
+                    st.write(f"**Total Questions Published:** {len(st.session_state.current_quiz)}")
+                    st.caption("Scanning this QR code on a mobile device on the same Wi-Fi network will automatically connect to the app and pre-fill the session code.")
+                with col_qr:
+                    qr_bytes = generate_qr(qr_target)
+                    st.image(qr_bytes, caption="Scan QR to open Exam Portal", width=180)
+
+        # TAB 3: SESSION CODE & QR GENERATION
+        with tab3:
+            st.subheader("Student Joining Info Settings")
+            new_code = st.text_input("Session Code", value=st.session_state.session_code)
+            
+            if new_code != st.session_state.session_code:
+                st.session_state.session_code = new_code
+                if st.session_state.current_quiz:
+                    quiz_payload = {
+                        "session_code": st.session_state.session_code,
+                        "quiz": st.session_state.current_quiz,
+                        "marking_scheme": st.session_state.marking_scheme,
+                        "cutoff_score": st.session_state.cutoff_score
+                    }
+                    save_active_quiz(quiz_payload)
+            
+            auto_ip_url = get_local_ip()
+            app_url_settings = st.text_input("Server Base URL for QR generation", value=auto_ip_url, key="app_url_tab3")
+            qr_target_settings = f"{app_url_settings}?code={st.session_state.session_code}"
+            qr_bytes = generate_qr(qr_target_settings)
+            st.image(qr_bytes, caption=f"Scan QR Code to Join Session: {st.session_state.session_code}", width=200)
