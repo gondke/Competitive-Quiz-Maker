@@ -318,7 +318,7 @@ elif st.session_state.portal_role == "Teacher":
         st.title("Instructor Authentication")
         pin_input = st.text_input("Enter Admin PIN to access Instructor Portal:", type="password")
         if st.button("Login as Instructor"):
-            if pin_input == "1234":
+            if pin_input == "2763":
                 st.session_state.admin_authenticated = True
                 st.rerun()
             else:
