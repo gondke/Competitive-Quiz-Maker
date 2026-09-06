@@ -12,6 +12,9 @@ st.set_page_config(page_title="National Testing Portal - Mock Exam", layout="wid
 if "question_bank" not in st.session_state:
     st.session_state.question_bank = []
 
+if "editing_idx" not in st.session_state:
+    st.session_state.editing_idx = None
+
 if "current_quiz" not in st.session_state:
     st.session_state.current_quiz = []
 
@@ -63,53 +66,86 @@ if sidebar_mode == "Admin / Instructor Portal":
     tab1, tab2, tab3 = st.tabs(["Question Bank Management", "Quiz Configuration", "Session & QR Code"])
 
     # -----------------------------------------------------
-    # TAB 1: QUESTION BANK MANAGEMENT
+    # TAB 1: QUESTION BANK MANAGEMENT (ADD / EDIT)
     # -----------------------------------------------------
     with tab1:
-        st.subheader("Add New LaTeX Question")
-        with st.form("add_question_form", clear_on_submit=True):
-            q_type = st.selectbox("Question Type", ["MCQ", "MSQ", "NAT"])
-            q_text = st.text_area("Question Text (LaTeX supported, e.g., $f(x) = \\int_{0}^{x} t^2 dt$):")
+        editing = st.session_state.editing_idx is not None
+        if editing:
+            st.subheader(f"Edit Question #{st.session_state.editing_idx + 1}")
+            q_to_edit = st.session_state.question_bank[st.session_state.editing_idx]
+        else:
+            st.subheader("Add New LaTeX Question")
+            q_to_edit = None
+
+        with st.form("question_form", clear_on_submit=False):
+            default_type = q_to_edit["type"] if editing else "MCQ"
+            type_options = ["MCQ", "MSQ", "NAT"]
+            type_idx = type_options.index(default_type) if default_type in type_options else 0
+            
+            q_type = st.selectbox("Question Type", type_options, index=type_idx)
+            
+            default_text = q_to_edit["text"] if editing else ""
+            q_text = st.text_area("Question Text (LaTeX supported, e.g., $f(x) = \\int_{0}^{x} t^2 dt$):", value=default_text)
             
             opts = []
-            nat_answer = None
+            nat_answer = 0.0
             correct_opts = []
 
             if q_type in ["MCQ", "MSQ"]:
                 col1, col2 = st.columns(2)
+                def_opts = q_to_edit["options"] if editing and len(q_to_edit.get("options", [])) == 4 else ["", "", "", ""]
                 with col1:
-                    opt_a = st.text_input("Option A (LaTeX allowed)")
-                    opt_b = st.text_input("Option B (LaTeX allowed)")
+                    opt_a = st.text_input("Option A (LaTeX allowed)", value=def_opts[0])
+                    opt_b = st.text_input("Option B (LaTeX allowed)", value=def_opts[1])
                 with col2:
-                    opt_c = st.text_input("Option C (LaTeX allowed)")
-                    opt_d = st.text_input("Option D (LaTeX allowed)")
+                    opt_c = st.text_input("Option C (LaTeX allowed)", value=def_opts[2])
+                    opt_d = st.text_input("Option D (LaTeX allowed)", value=def_opts[3])
                 opts = [opt_a, opt_b, opt_c, opt_d]
 
                 if q_type == "MCQ":
-                    correct_opts = [st.selectbox("Correct Option", ["Option A", "Option B", "Option C", "Option D"])]
+                    default_corr = q_to_edit["correct"][0] if editing and isinstance(q_to_edit["correct"], list) and q_to_edit["correct"] else "Option A"
+                    corr_options = ["Option A", "Option B", "Option C", "Option D"]
+                    corr_idx = corr_options.index(default_corr) if default_corr in corr_options else 0
+                    correct_opts = [st.selectbox("Correct Option", corr_options, index=corr_idx)]
                 else:
                     st.write("Select All Correct Options (MSQ):")
                     c1, c2, c3, c4 = st.columns(4)
                     correct_opts = []
-                    if c1.checkbox("A"): correct_opts.append("Option A")
-                    if c2.checkbox("B"): correct_opts.append("Option B")
-                    if c3.checkbox("C"): correct_opts.append("Option C")
-                    if c4.checkbox("D"): correct_opts.append("Option D")
+                    prev_corr = q_to_edit["correct"] if editing and isinstance(q_to_edit["correct"], list) else []
+                    if c1.checkbox("A", value=("Option A" in prev_corr)): correct_opts.append("Option A")
+                    if c2.checkbox("B", value=("Option B" in prev_corr)): correct_opts.append("Option B")
+                    if c3.checkbox("C", value=("Option C" in prev_corr)): correct_opts.append("Option C")
+                    if c4.checkbox("D", value=("Option D" in prev_corr)): correct_opts.append("Option D")
             else:
-                nat_answer = st.number_input("Numerical Correct Answer", value=0.0, step=0.01)
+                default_nat = float(q_to_edit["correct"]) if editing and q_to_edit["correct"] is not None else 0.0
+                nat_answer = st.number_input("Numerical Correct Answer", value=default_nat, step=0.01)
 
-            submitted = st.form_submit_button("Add Question to Bank")
+            btn_label = "Update Question" if editing else "Add Question to Bank"
+            submitted = st.form_submit_button(btn_label)
+
             if submitted and q_text.strip():
-                new_q = {
-                    "id": len(st.session_state.question_bank) + 1,
+                updated_data = {
+                    "id": q_to_edit["id"] if editing else len(st.session_state.question_bank) + 1,
                     "type": q_type,
                     "text": q_text,
                     "options": opts,
                     "correct": correct_opts if q_type in ["MCQ", "MSQ"] else nat_answer,
-                    "selected": False
+                    "selected": q_to_edit["selected"] if editing else False
                 }
-                st.session_state.question_bank.append(new_q)
-                st.success("Question successfully added!")
+                
+                if editing:
+                    st.session_state.question_bank[st.session_state.editing_idx] = updated_data
+                    st.session_state.editing_idx = None
+                    st.success("Question updated successfully!")
+                else:
+                    st.session_state.question_bank.append(updated_data)
+                    st.success("Question successfully added!")
+                st.rerun()
+
+        if editing:
+            if st.button("Cancel Edit"):
+                st.session_state.editing_idx = None
+                st.rerun()
 
         st.divider()
         st.subheader("Question Bank Repository")
@@ -117,7 +153,7 @@ if sidebar_mode == "Admin / Instructor Portal":
         if st.session_state.question_bank:
             to_delete = []
             for idx, q in enumerate(st.session_state.question_bank):
-                cols = st.columns([0.5, 0.5, 7, 1])
+                cols = st.columns([0.5, 0.5, 6, 1, 1])
                 q["selected"] = cols[0].checkbox("", value=q["selected"], key=f"select_{idx}")
                 cols[1].write(f"**Q{idx+1} ({q['type']})**")
                 
@@ -131,12 +167,18 @@ if sidebar_mode == "Admin / Instructor Portal":
                     else:
                         st.write(f"*Correct Answer:* {q['correct']}")
 
-                if cols[3].button("Delete", key=f"del_{idx}"):
+                if cols[3].button("Edit", key=f"edit_{idx}"):
+                    st.session_state.editing_idx = idx
+                    st.rerun()
+
+                if cols[4].button("Delete", key=f"del_{idx}"):
                     to_delete.append(idx)
 
             if to_delete:
                 for idx in sorted(to_delete, reverse=True):
                     st.session_state.question_bank.pop(idx)
+                    if st.session_state.editing_idx == idx:
+                        st.session_state.editing_idx = None
                 st.rerun()
         else:
             st.info("No questions added to the bank yet.")
@@ -300,7 +342,6 @@ else:
                 col_i = grid_cols[i % 4]
                 state = st.session_state.question_states.get(i, "not_visited")
                 
-                # Color code buttons based on state
                 label = f"{i+1}"
                 if state == "answered":
                     btn_type = "primary"
