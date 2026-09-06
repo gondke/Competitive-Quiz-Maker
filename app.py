@@ -39,8 +39,9 @@ def save_active_quiz(quiz_data):
     with open(QUIZ_FILE, "w", encoding="utf-8") as f:
         json.dump(quiz_data, f, indent=4)
 
-def generate_numeric_session_code(length=6):
-    return ''.join(random.choices("0123456789", k=length))
+def generate_6digit_otp():
+    """Generates a random 6-digit numeric OTP."""
+    return str(random.randint(100000, 999999))
 
 # ---------------------------------------------------------
 # SESSION STATE INITIALIZATION
@@ -62,13 +63,15 @@ if "editing_idx" not in st.session_state:
 if "current_quiz" not in st.session_state:
     st.session_state.current_quiz = active_quiz_data.get("quiz", [])
 
+# Strict initialization: Ensure code is purely numeric and 6 digits
+saved_code = active_quiz_data.get("session_code", None)
+if saved_code and str(saved_code).isdigit() and len(str(saved_code)) == 6:
+    initial_code = str(saved_code)
+else:
+    initial_code = generate_6digit_otp()
+
 if "session_code" not in st.session_state:
-    # Initialize with saved numeric code or generate a new 6-digit numeric code
-    saved_code = active_quiz_data.get("session_code", None)
-    if saved_code and str(saved_code).isdigit():
-        st.session_state.session_code = str(saved_code)
-    else:
-        st.session_state.session_code = generate_numeric_session_code()
+    st.session_state.session_code = initial_code
 
 if "marking_scheme" not in st.session_state:
     st.session_state.marking_scheme = active_quiz_data.get(
@@ -216,7 +219,7 @@ elif st.session_state.portal_role == "Student":
     elif not st.session_state.quiz_active:
         st.subheader("Candidate Login")
         
-        input_code = st.text_input("Enter Numeric Exam Session Code:")
+        input_code = st.text_input("Enter 6-Digit Exam OTP Code:")
         candidate_name = st.text_input("Candidate Name:")
         
         if st.button("Start Examination", type="primary"):
@@ -227,7 +230,7 @@ elif st.session_state.portal_role == "Student":
                 st.session_state.quiz_active = True
                 st.rerun()
             else:
-                st.error("Invalid Exam Session Code or Candidate Name.")
+                st.error("Invalid Exam OTP Code or Candidate Name. Please check the numeric OTP provided by your instructor.")
     else:
         if "curr_idx" not in st.session_state:
             st.session_state.curr_idx = 0
@@ -444,27 +447,26 @@ elif st.session_state.portal_role == "Teacher":
 
         # TAB 2: QUIZ CONFIGURATION
         with tab2:
-            st.subheader("Configure Exam Rules & Numeric Session Code")
+            st.subheader("Configure Exam Rules & Generate Exam OTP")
             
             c_code1, c_code2 = st.columns([2, 1])
             with c_code1:
-                st.text_input("Active Numeric Exam Session Code", value=st.session_state.session_code, disabled=True)
+                st.text_input("Active 6-Digit Exam OTP", value=st.session_state.session_code, disabled=True)
             with c_code2:
                 st.write(" ")
                 st.write(" ")
-                if st.button("Generate New Numeric Code", type="secondary"):
-                    new_code = generate_numeric_session_code()
-                    st.session_state.session_code = new_code
+                if st.button("Generate New 6-Digit OTP", type="secondary"):
+                    new_otp = generate_6digit_otp()
+                    st.session_state.session_code = new_otp
                     
-                    # Update active quiz persistence file if a quiz exists
-                    if st.session_state.current_quiz:
-                        quiz_payload = {
-                            "session_code": new_code,
-                            "quiz": st.session_state.current_quiz,
-                            "marking_scheme": st.session_state.marking_scheme,
-                            "cutoff_score": st.session_state.cutoff_score
-                        }
-                        save_active_quiz(quiz_payload)
+                    # Update active quiz persistence file
+                    quiz_payload = {
+                        "session_code": new_otp,
+                        "quiz": st.session_state.current_quiz,
+                        "marking_scheme": st.session_state.marking_scheme,
+                        "cutoff_score": st.session_state.cutoff_score
+                    }
+                    save_active_quiz(quiz_payload)
                     st.rerun()
 
             st.divider()
@@ -499,12 +501,12 @@ elif st.session_state.portal_role == "Teacher":
                         "cutoff_score": st.session_state.cutoff_score
                     }
                     save_active_quiz(quiz_payload)
-                    st.success(f"Quiz successfully generated and published globally with {len(selected_qs)} questions!")
+                    st.success(f"Quiz successfully generated and published with {len(selected_qs)} questions!")
 
             if st.session_state.current_quiz:
                 st.divider()
                 st.subheader("📢 Active Quiz Access Information")
-                st.metric("Current Numeric Session Code", st.session_state.session_code)
+                st.metric("Current Exam OTP", st.session_state.session_code)
                 st.write(f"**Total Questions Published:** {len(st.session_state.current_quiz)}")
 
         # TAB 3: QUIZ DEMO / PREVIEW
