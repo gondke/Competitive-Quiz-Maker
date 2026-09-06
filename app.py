@@ -1,16 +1,36 @@
 import streamlit as st
 import pandas as pd
 import qrcode
+import json
+import os
 from io import BytesIO
 
 # Page configuration
 st.set_page_config(page_title="National Testing Portal - Mock Exam", layout="wide")
 
 # ---------------------------------------------------------
+# FILE STORAGE FOR PERMANENT QUESTION BANK
+# ---------------------------------------------------------
+DB_FILE = "question_bank.json"
+
+def load_question_bank():
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_question_bank(data):
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+
+# ---------------------------------------------------------
 # SESSION STATE INITIALIZATION
 # ---------------------------------------------------------
 if "question_bank" not in st.session_state:
-    st.session_state.question_bank = []
+    st.session_state.question_bank = load_question_bank()
 
 if "editing_idx" not in st.session_state:
     st.session_state.editing_idx = None
@@ -143,9 +163,11 @@ if sidebar_mode == "Admin / Instructor Portal":
                 if editing:
                     st.session_state.question_bank[st.session_state.editing_idx] = updated_data
                     st.session_state.editing_idx = None
+                    save_question_bank(st.session_state.question_bank)
                     st.success("Question updated successfully!")
                 else:
                     st.session_state.question_bank.append(updated_data)
+                    save_question_bank(st.session_state.question_bank)
                     st.success("Question successfully added!")
                 st.rerun()
 
@@ -186,6 +208,7 @@ if sidebar_mode == "Admin / Instructor Portal":
                     st.session_state.question_bank.pop(idx)
                     if st.session_state.editing_idx == idx:
                         st.session_state.editing_idx = None
+                save_question_bank(st.session_state.question_bank)
                 st.rerun()
         else:
             st.info("No questions added to the bank yet.")
@@ -232,7 +255,7 @@ if sidebar_mode == "Admin / Instructor Portal":
         if st.session_state.current_quiz:
             st.divider()
             st.subheader("📢 Active Quiz Access Information")
-            st.info(f"Give students the session code or display this QR code to let them join:")
+            st.info("Give students the session code or display this QR code to let them join:")
             col_info, col_qr = st.columns([2, 1])
             with col_info:
                 st.metric("Exam Session Code", st.session_state.session_code)
