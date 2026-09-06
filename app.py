@@ -9,9 +9,10 @@ from io import BytesIO
 st.set_page_config(page_title="National Testing Portal - Mock Exam", layout="wide")
 
 # ---------------------------------------------------------
-# FILE STORAGE FOR PERMANENT QUESTION BANK
+# FILE STORAGE FOR PERMANENT QUESTION BANK & ACTIVE QUIZ
 # ---------------------------------------------------------
 DB_FILE = "question_bank.json"
+QUIZ_FILE = "active_quiz.json"
 
 def load_question_bank():
     if os.path.exists(DB_FILE):
@@ -26,17 +27,43 @@ def save_question_bank(data):
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
+def load_active_quiz():
+    if os.path.exists(QUIZ_FILE):
+        try:
+            with open(QUIZ_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_active_quiz(quiz_data):
+    with open(QUIZ_FILE, "w", encoding="utf-8") as f:
+        json.dump(quiz_data, f, indent=4)
+
 # ---------------------------------------------------------
 # SESSION STATE INITIALIZATION
 # ---------------------------------------------------------
 if "question_bank" not in st.session_state:
     st.session_state.question_bank = load_question_bank()
 
+active_quiz_data = load_active_quiz()
+
 if "editing_idx" not in st.session_state:
     st.session_state.editing_idx = None
 
 if "current_quiz" not in st.session_state:
-    st.session_state.current_quiz = []
+    st.session_state.current_quiz = active_quiz_data.get("quiz", [])
+
+if "session_code" not in st.session_state:
+    st.session_state.session_code = active_quiz_data.get("session_code", "GATE-2026-TEST")
+
+if "marking_scheme" not in st.session_state:
+    st.session_state.marking_scheme = active_quiz_data.get(
+        "marking_scheme", {"MCQ": (1.0, -0.33), "MSQ": (1.0, 0.0), "NAT": (1.0, 0.0)}
+    )
+
+if "cutoff_score" not in st.session_state:
+    st.session_state.cutoff_score = active_quiz_data.get("cutoff_score", 1.0)
 
 if "quiz_active" not in st.session_state:
     st.session_state.quiz_active = False
@@ -48,18 +75,9 @@ if "user_responses" not in st.session_state:
     st.session_state.user_responses = {}
 
 if "question_states" not in st.session_state:
-    st.session_state.question_states = {}  # 'not_visited', 'not_answered', 'answered', 'review'
+    st.session_state.question_states = {}
 
-if "marking_scheme" not in st.session_state:
-    st.session_state.marking_scheme = {"MCQ": (1.0, -0.33), "MSQ": (1.0, 0.0), "NAT": (1.0, 0.0)}
-
-if "cutoff_score" not in st.session_state:
-    st.session_state.cutoff_score = 1.0
-
-if "session_code" not in st.session_state:
-    st.session_state.session_code = "GATE-2026-TEST"
-
-# Function to generate QR Image bytes
+# Helper to generate QR Image bytes
 def generate_qr(data_str):
     qr = qrcode.make(data_str)
     buf = BytesIO()
@@ -238,41 +256,63 @@ if sidebar_mode == "Admin / Instructor Portal":
 
         st.session_state.cutoff_score = st.number_input("Pass Cutoff Score", value=5.0)
 
-        if st.button("Generate Quiz from Ticked Questions"):
+        if st.button("Generate & Publish Quiz"):
             selected_qs = [q for q in st.session_state.question_bank if q["selected"]]
             if not selected_qs:
                 st.warning("Please select at least one question from the Question Bank tab using checkboxes.")
             else:
                 st.session_state.current_quiz = selected_qs
-                st.session_state.question_states = {i: "not_visited" for i in range(len(selected_qs))}
-                st.session_state.question_states[0] = "not_answered"
-                st.session_state.user_responses = {}
-                st.session_state.quiz_submitted = False
-                st.session_state.quiz_active = False
-                st.success(f"Quiz successfully generated with {len(selected_qs)} questions!")
+                
+                # Save published quiz globally for all student sessions
+                quiz_payload = {
+                    "session_code": st.session_state.session_code,
+                    "quiz": selected_qs,
+                    "marking_scheme": st.session_state.marking_scheme,
+                    "cutoff_score": st.session_state.cutoff_score
+                }
+                save_active_quiz(quiz_payload)
+                
+                st.success(f"Quiz successfully generated and published globally with {len(selected_qs)} questions!")
 
-        # Display generated Quiz Join Info right away if quiz is available
+        # Display active quiz info if available
         if st.session_state.current_quiz:
             st.divider()
             st.subheader("📢 Active Quiz Access Information")
             st.info("Give students the session code or display this QR code to let them join:")
+            
+            app_url = st.text_input("Server App URL for QR (e.g., http://192.168.1.5:8501 or deployed URL)", value="http://localhost:8501")
+            qr_target = f"{app_url}?code={st.session_state.session_code}"
+            
             col_info, col_qr = st.columns([2, 1])
             with col_info:
                 st.metric("Exam Session Code", st.session_state.session_code)
-                st.write(f"**Total Questions Selected:** {len(st.session_state.current_quiz)}")
+                st.write(f"**Total Questions Published:** {len(st.session_state.current_quiz)}")
             with col_qr:
-                qr_bytes = generate_qr(st.session_state.session_code)
-                st.image(qr_bytes, caption=f"Scan to Join Code: {st.session_state.session_code}", width=180)
+                qr_bytes = generate_qr(qr_target)
+                st.image(qr_bytes, caption="Scan QR to open Exam Portal", width=180)
 
     # -----------------------------------------------------
     # TAB 3: SESSION CODE & QR GENERATION
     # -----------------------------------------------------
     with tab3:
         st.subheader("Student Joining Info Settings")
-        st.session_state.session_code = st.text_input("Session Code", value=st.session_state.session_code)
+        new_code = st.text_input("Session Code", value=st.session_state.session_code)
         
-        qr_bytes = generate_qr(st.session_state.session_code)
-        st.image(qr_bytes, caption=f"Scan QR Code to retrieve Session Code: {st.session_state.session_code}", width=200)
+        if new_code != st.session_state.session_code:
+            st.session_state.session_code = new_code
+            if st.session_state.current_quiz:
+                quiz_payload = {
+                    "session_code": st.session_state.session_code,
+                    "quiz": st.session_state.current_quiz,
+                    "marking_scheme": st.session_state.marking_scheme,
+                    "cutoff_score": st.session_state.cutoff_score
+                }
+                save_active_quiz(quiz_payload)
+        
+        app_url_settings = st.text_input("Server Base URL for QR generation", value="http://localhost:8501", key="app_url_tab3")
+        qr_target_settings = f"{app_url_settings}?code={st.session_state.session_code}"
+        qr_bytes = generate_qr(qr_target_settings)
+        st.image(qr_bytes, caption=f"Scan QR Code to Join Session: {st.session_state.session_code}", width=200)
 
 # =========================================================
 # STUDENT EXAM PORTAL
@@ -280,7 +320,12 @@ if sidebar_mode == "Admin / Instructor Portal":
 else:
     st.markdown('<div class="exam-header">IIT JAM / GATE / CSIR NET Online Examination Portal</div>', unsafe_allow_html=True)
 
-    if not st.session_state.current_quiz:
+    # Sync globally published quiz data
+    latest_quiz_data = load_active_quiz()
+    published_quiz = latest_quiz_data.get("quiz", [])
+    valid_session_code = latest_quiz_data.get("session_code", st.session_state.session_code)
+
+    if not published_quiz:
         st.warning("No active quiz available. Please ask the instructor to configure and publish a quiz.")
     elif st.session_state.quiz_submitted:
         # -------------------------------------------------
@@ -292,9 +337,13 @@ else:
         max_possible = 0.0
         details = []
 
-        for idx, q in enumerate(st.session_state.current_quiz):
+        active_quiz = published_quiz
+        marking_scheme = latest_quiz_data.get("marking_scheme", st.session_state.marking_scheme)
+        cutoff = latest_quiz_data.get("cutoff_score", st.session_state.cutoff_score)
+
+        for idx, q in enumerate(active_quiz):
             q_type = q["type"]
-            pos_m, neg_m = st.session_state.marking_scheme[q_type]
+            pos_m, neg_m = marking_scheme[q_type]
             max_possible += pos_m
             user_ans = st.session_state.user_responses.get(idx, None)
             score = 0.0
@@ -338,11 +387,11 @@ else:
 
         st.subheader(f"Total Score: {total_score:.2f} / {max_possible:.2f}")
 
-        if total_score >= st.session_state.cutoff_score:
+        if total_score >= cutoff:
             st.balloons()
-            st.success(f"🎉 Congratulations! You cleared the exam cutoff score of {st.session_state.cutoff_score:.2f} marks!")
+            st.success(f"🎉 Congratulations! You cleared the exam cutoff score of {cutoff:.2f} marks!")
         else:
-            st.error(f"You missed the cutoff score of {st.session_state.cutoff_score:.2f} marks. Better luck next time!")
+            st.error(f"You missed the cutoff score of {cutoff:.2f} marks. Better luck next time!")
 
         st.write("### Detailed Question Analysis")
         st.dataframe(pd.DataFrame(details), use_container_width=True)
@@ -352,11 +401,19 @@ else:
         # LOGIN / SESSION VERIFICATION
         # -------------------------------------------------
         st.subheader("Enter Details to Start Test")
-        input_code = st.text_input("Enter Session Code or Code Scanned from QR:")
+        
+        # Read URL parameter if scanned via QR Code
+        query_params = st.query_params
+        default_code_input = query_params.get("code", "")
+        
+        input_code = st.text_input("Enter Session Code or Code Scanned from QR:", value=default_code_input)
         candidate_name = st.text_input("Candidate Name:")
         
         if st.button("Start Examination"):
-            if input_code.strip() == st.session_state.session_code and candidate_name.strip():
+            if input_code.strip() == valid_session_code and candidate_name.strip():
+                st.session_state.current_quiz = published_quiz
+                st.session_state.question_states = {i: "not_visited" for i in range(len(published_quiz))}
+                st.session_state.question_states[0] = "not_answered"
                 st.session_state.quiz_active = True
                 st.rerun()
             else:
