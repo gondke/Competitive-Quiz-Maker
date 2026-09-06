@@ -1,26 +1,12 @@
 import streamlit as st
 import pandas as pd
-import qrcode
 import json
 import os
-import socket
-from io import BytesIO
+import random
+import string
 
 # Page configuration
 st.set_page_config(page_title="National Testing Portal - Mock Exam", layout="wide")
-
-# ---------------------------------------------------------
-# HELPER TO GET LOCAL NETWORK IP ADDRESS
-# ---------------------------------------------------------
-def get_local_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return f"http://{ip}:8501"
-    except Exception:
-        return "http://localhost:8501"
 
 # ---------------------------------------------------------
 # FILE STORAGE FOR PERMANENT QUESTION BANK & ACTIVE QUIZ
@@ -54,6 +40,9 @@ def save_active_quiz(quiz_data):
     with open(QUIZ_FILE, "w", encoding="utf-8") as f:
         json.dump(quiz_data, f, indent=4)
 
+def generate_otp_code(length=6):
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
+
 # ---------------------------------------------------------
 # SESSION STATE INITIALIZATION
 # ---------------------------------------------------------
@@ -75,7 +64,7 @@ if "current_quiz" not in st.session_state:
     st.session_state.current_quiz = active_quiz_data.get("quiz", [])
 
 if "session_code" not in st.session_state:
-    st.session_state.session_code = active_quiz_data.get("session_code", "GATE-2026-TEST")
+    st.session_state.session_code = active_quiz_data.get("session_code", generate_otp_code())
 
 if "marking_scheme" not in st.session_state:
     st.session_state.marking_scheme = active_quiz_data.get(
@@ -97,11 +86,8 @@ if "user_responses" not in st.session_state:
 if "question_states" not in st.session_state:
     st.session_state.question_states = {}
 
-def generate_qr(data_str):
-    qr = qrcode.make(data_str)
-    buf = BytesIO()
-    qr.save(buf)
-    return buf.getvalue()
+if "demo_idx" not in st.session_state:
+    st.session_state.demo_idx = 0
 
 # ---------------------------------------------------------
 # CSS FOR EXAM PALETTE & UI REPLICATION
@@ -116,11 +102,6 @@ st.markdown("""
     .btn-review { background-color: #6f42c1; }
     </style>
 """, unsafe_allow_html=True)
-
-# Detect QR code query parameters automatically
-query_params = st.query_params
-if "code" in query_params and st.session_state.portal_role is None:
-    st.session_state.portal_role = "Student"
 
 # ---------------------------------------------------------
 # LANDING PAGE: ROLE SELECTION
@@ -137,16 +118,15 @@ if st.session_state.portal_role is None:
             st.rerun()
             
     with col2:
-        st.warning("### Instructor / Teacher Portal\nManage question bank, publish quizzes, and generate access codes.")
+        st.warning("### Instructor / Teacher Portal\nManage question bank, publish quizzes, and view exam demo.")
         if st.button("Enter Instructor Portal", use_container_width=True):
             st.session_state.portal_role = "Teacher"
             st.rerun()
 
 # =========================================================
-# 1. STUDENT PORTAL (TEACHER PORTAL STRICTLY HIDDEN)
+# 1. STUDENT PORTAL (TEACHER PORTAL HIDDEN)
 # =========================================================
 elif st.session_state.portal_role == "Student":
-    # Header with exit button
     head_col1, head_col2 = st.columns([6, 1])
     with head_col1:
         st.markdown('<div class="exam-header">IIT JAM / GATE / CSIR NET Student Examination Portal</div>', unsafe_allow_html=True)
@@ -157,7 +137,6 @@ elif st.session_state.portal_role == "Student":
             st.session_state.quiz_submitted = False
             st.rerun()
 
-    # Load active published quiz data
     latest_quiz_data = load_active_quiz()
     published_quiz = latest_quiz_data.get("quiz", [])
     valid_session_code = latest_quiz_data.get("session_code", st.session_state.session_code)
@@ -165,9 +144,6 @@ elif st.session_state.portal_role == "Student":
     if not published_quiz:
         st.warning("No active quiz available at the moment. Please ask your instructor to configure and publish a test.")
     elif st.session_state.quiz_submitted:
-        # -------------------------------------------------
-        # RESULT ANALYSIS PAGE
-        # -------------------------------------------------
         st.title("Final Exam Performance & Analysis")
         
         total_score = 0.0
@@ -234,13 +210,9 @@ elif st.session_state.portal_role == "Student":
         st.dataframe(pd.DataFrame(details), use_container_width=True)
 
     elif not st.session_state.quiz_active:
-        # -------------------------------------------------
-        # LOGIN FORM
-        # -------------------------------------------------
         st.subheader("Candidate Login")
         
-        default_code_input = query_params.get("code", "")
-        input_code = st.text_input("Enter Exam Session Code:", value=default_code_input)
+        input_code = st.text_input("Enter Exam Session Code:")
         candidate_name = st.text_input("Candidate Name:")
         
         if st.button("Start Examination", type="primary"):
@@ -253,16 +225,12 @@ elif st.session_state.portal_role == "Student":
             else:
                 st.error("Invalid Exam Session Code or Candidate Name.")
     else:
-        # -------------------------------------------------
-        # LIVE EXAM INTERFACE
-        # -------------------------------------------------
         if "curr_idx" not in st.session_state:
             st.session_state.curr_idx = 0
 
         curr_q = st.session_state.current_quiz[st.session_state.curr_idx]
         col_main, col_palette = st.columns([3, 1])
 
-        # Question Palette (Right Side)
         with col_palette:
             st.subheader("Question Palette")
             grid_cols = st.columns(4)
@@ -282,7 +250,6 @@ elif st.session_state.portal_role == "Student":
                 st.session_state.quiz_submitted = True
                 st.rerun()
 
-        # Question Panel (Left Side)
         with col_main:
             st.markdown(f"### Question No. {st.session_state.curr_idx + 1} ({curr_q['type']})")
             st.markdown(f"**{curr_q['text']}**")
@@ -342,19 +309,18 @@ elif st.session_state.portal_role == "Student":
 elif st.session_state.portal_role == "Teacher":
     st.sidebar.button("Switch Portal", on_click=lambda: st.session_state.update({"portal_role": None, "admin_authenticated": False}))
     
-    # PIN Protection for Instructor Access
     if not st.session_state.admin_authenticated:
         st.title("Instructor Authentication")
         pin_input = st.text_input("Enter Admin PIN to access Instructor Portal:", type="password")
         if st.button("Login as Instructor"):
-            if pin_input == "1234":  # Default PIN
+            if pin_input == "1234":
                 st.session_state.admin_authenticated = True
                 st.rerun()
             else:
                 st.error("Incorrect PIN. Access denied.")
     else:
         st.title("Instructor Control Center")
-        tab1, tab2, tab3 = st.tabs(["Question Bank Management", "Quiz Configuration", "Session & QR Code"])
+        tab1, tab2, tab3 = st.tabs(["Question Bank Management", "Quiz Configuration", "Quiz Demo / Preview"])
 
         # TAB 1: QUESTION BANK MANAGEMENT
         with tab1:
@@ -474,7 +440,19 @@ elif st.session_state.portal_role == "Teacher":
 
         # TAB 2: QUIZ CONFIGURATION
         with tab2:
-            st.subheader("Configure Exam Rules & Marking Scheme")
+            st.subheader("Configure Exam Rules & Session Code")
+            
+            c_code1, c_code2 = st.columns([2, 1])
+            with c_code1:
+                st.text_input("Active Exam Session Code", value=st.session_state.session_code, disabled=True)
+            with c_code2:
+                st.write(" ")
+                st.write(" ")
+                if st.button("Generate New Code", type="secondary"):
+                    st.session_state.session_code = generate_otp_code()
+                    st.rerun()
+
+            st.divider()
             c1, c2, c3 = st.columns(3)
             with c1:
                 mcq_pos = st.number_input("MCQ Correct Marks", value=1.0)
@@ -493,7 +471,7 @@ elif st.session_state.portal_role == "Teacher":
             }
             st.session_state.cutoff_score = st.number_input("Pass Cutoff Score", value=5.0)
 
-            if st.button("Generate & Publish Quiz"):
+            if st.button("Generate & Publish Quiz", type="primary"):
                 selected_qs = [q for q in st.session_state.question_bank if q["selected"]]
                 if not selected_qs:
                     st.warning("Please select at least one question from the Question Bank tab using checkboxes.")
@@ -511,38 +489,51 @@ elif st.session_state.portal_role == "Teacher":
             if st.session_state.current_quiz:
                 st.divider()
                 st.subheader("📢 Active Quiz Access Information")
-                
-                auto_ip_url = get_local_ip()
-                app_url = st.text_input("Server Base URL for Mobile QR Access:", value=auto_ip_url)
-                qr_target = f"{app_url}?code={st.session_state.session_code}"
-                
-                col_info, col_qr = st.columns([2, 1])
-                with col_info:
-                    st.metric("Exam Session Code", st.session_state.session_code)
-                    st.write(f"**Total Questions Published:** {len(st.session_state.current_quiz)}")
-                    st.caption("Scanning this QR code on a mobile device on the same Wi-Fi network will automatically connect to the app and pre-fill the session code.")
-                with col_qr:
-                    qr_bytes = generate_qr(qr_target)
-                    st.image(qr_bytes, caption="Scan QR to open Exam Portal", width=180)
+                st.metric("Current Exam Session Code", st.session_state.session_code)
+                st.write(f"**Total Questions Published:** {len(st.session_state.current_quiz)}")
 
-        # TAB 3: SESSION CODE & QR GENERATION
+        # TAB 3: QUIZ DEMO / PREVIEW
         with tab3:
-            st.subheader("Student Joining Info Settings")
-            new_code = st.text_input("Session Code", value=st.session_state.session_code)
-            
-            if new_code != st.session_state.session_code:
-                st.session_state.session_code = new_code
-                if st.session_state.current_quiz:
-                    quiz_payload = {
-                        "session_code": st.session_state.session_code,
-                        "quiz": st.session_state.current_quiz,
-                        "marking_scheme": st.session_state.marking_scheme,
-                        "cutoff_score": st.session_state.cutoff_score
-                    }
-                    save_active_quiz(quiz_payload)
-            
-            auto_ip_url = get_local_ip()
-            app_url_settings = st.text_input("Server Base URL for QR generation", value=auto_ip_url, key="app_url_tab3")
-            qr_target_settings = f"{app_url_settings}?code={st.session_state.session_code}"
-            qr_bytes = generate_qr(qr_target_settings)
-            st.image(qr_bytes, caption=f"Scan QR Code to Join Session: {st.session_state.session_code}", width=200)
+            st.subheader("Quiz Demo / Preview")
+            demo_quiz = st.session_state.current_quiz
+
+            if not demo_quiz:
+                st.info("No active quiz configured yet. Please select questions and click 'Generate & Publish Quiz' under Quiz Configuration.")
+            else:
+                st.caption("This is an interactive preview mode showing how students will view the published exam interface.")
+                
+                demo_col_main, demo_col_palette = st.columns([3, 1])
+
+                with demo_col_palette:
+                    st.subheader("Palette Preview")
+                    grid_cols = st.columns(4)
+                    for i in range(len(demo_quiz)):
+                        col_i = grid_cols[i % 4]
+                        label = f"{i+1}"
+                        if col_i.button(label, key=f"demo_pal_{i}", use_container_width=True):
+                            st.session_state.demo_idx = i
+                            st.rerun()
+
+                with demo_col_main:
+                    curr_demo_q = demo_quiz[st.session_state.demo_idx]
+                    st.markdown(f"### Question No. {st.session_state.demo_idx + 1} ({curr_demo_q['type']})")
+                    st.markdown(f"**{curr_demo_q['text']}**")
+                    st.divider()
+
+                    if curr_demo_q["type"] in ["MCQ", "MSQ"]:
+                        labels = ["Option A", "Option B", "Option C", "Option D"]
+                        for lbl, opt in zip(labels, curr_demo_q["options"]):
+                            st.write(f"- **{lbl}:** {opt}")
+                    elif curr_demo_q["type"] == "NAT":
+                        st.info("Students will enter a numerical answer in a text box.")
+
+                    st.divider()
+                    st.write(f"**Correct Answer key:** `{curr_demo_q['correct']}`")
+
+                    d_col1, d_col2 = st.columns(2)
+                    if d_col1.button("Previous Question", disabled=(st.session_state.demo_idx == 0)):
+                        st.session_state.demo_idx -= 1
+                        st.rerun()
+                    if d_col2.button("Next Question", disabled=(st.session_state.demo_idx == len(demo_quiz) - 1)):
+                        st.session_state.demo_idx += 1
+                        st.rerun()
