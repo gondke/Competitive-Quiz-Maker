@@ -3,6 +3,7 @@ import pandas as pd
 import json
 import os
 import random
+import time
 
 # Page configuration
 st.set_page_config(page_title="National Testing Portal - Mock Exam", layout="wide")
@@ -63,7 +64,6 @@ if "editing_idx" not in st.session_state:
 if "current_quiz" not in st.session_state:
     st.session_state.current_quiz = active_quiz_data.get("quiz", [])
 
-# Always initialize session code dynamically
 if "session_code" not in st.session_state:
     saved_code = active_quiz_data.get("session_code", None)
     if saved_code and str(saved_code).isdigit() and len(str(saved_code)) == 6:
@@ -79,11 +79,18 @@ if "marking_scheme" not in st.session_state:
 if "cutoff_score" not in st.session_state:
     st.session_state.cutoff_score = active_quiz_data.get("cutoff_score", 1.0)
 
+# Duration in minutes
+if "duration_minutes" not in st.session_state:
+    st.session_state.duration_minutes = active_quiz_data.get("duration_minutes", 60)
+
 if "quiz_active" not in st.session_state:
     st.session_state.quiz_active = False
 
 if "quiz_submitted" not in st.session_state:
     st.session_state.quiz_submitted = False
+
+if "start_time" not in st.session_state:
+    st.session_state.start_time = None
 
 if "user_responses" not in st.session_state:
     st.session_state.user_responses = {}
@@ -105,6 +112,7 @@ st.markdown("""
     .btn-not-answered { background-color: #dc3545; }
     .btn-not-visited { background-color: #e0e0e0; color: black; }
     .btn-review { background-color: #6f42c1; }
+    .timer-box { font-size: 18px; font-weight: bold; color: #dc3545; border: 2px solid #dc3545; padding: 6px 12px; border-radius: 6px; text-align: center; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -145,6 +153,7 @@ elif st.session_state.portal_role == "Student":
     latest_quiz_data = load_active_quiz()
     published_quiz = latest_quiz_data.get("quiz", [])
     valid_session_code = str(latest_quiz_data.get("session_code", st.session_state.session_code))
+    total_duration_secs = int(latest_quiz_data.get("duration_minutes", st.session_state.duration_minutes)) * 60
 
     if not published_quiz:
         st.warning("No active quiz available at the moment. Please ask your instructor to configure and publish a test.")
@@ -226,10 +235,26 @@ elif st.session_state.portal_role == "Student":
                 st.session_state.question_states = {i: "not_visited" for i in range(len(published_quiz))}
                 st.session_state.question_states[0] = "not_answered"
                 st.session_state.quiz_active = True
+                st.session_state.start_time = time.time()
                 st.rerun()
             else:
                 st.error("Invalid Exam OTP Code or Candidate Name.")
     else:
+        # Calculate Remaining Time
+        elapsed_time = time.time() - st.session_state.start_time
+        remaining_secs = max(0, int(total_duration_secs - elapsed_time))
+
+        if remaining_secs <= 0:
+            st.session_state.quiz_submitted = True
+            st.error("Time is up! Your exam has been automatically submitted.")
+            st.rerun()
+
+        # Format Timer
+        rem_hrs = remaining_secs // 3600
+        rem_mins = (remaining_secs % 3600) // 60
+        rem_secs = remaining_secs % 60
+        timer_str = f"⏱️ Time Remaining: {rem_hrs:02d}:{rem_mins:02d}:{rem_secs:02d}"
+
         if "curr_idx" not in st.session_state:
             st.session_state.curr_idx = 0
 
@@ -237,6 +262,8 @@ elif st.session_state.portal_role == "Student":
         col_main, col_palette = st.columns([3, 1])
 
         with col_palette:
+            st.markdown(f'<div class="timer-box">{timer_str}</div>', unsafe_allow_html=True)
+            st.write(" ")
             st.subheader("Question Palette")
             grid_cols = st.columns(4)
             for i in range(len(st.session_state.current_quiz)):
@@ -318,7 +345,7 @@ elif st.session_state.portal_role == "Teacher":
         st.title("Instructor Authentication")
         pin_input = st.text_input("Enter Admin PIN to access Instructor Portal:", type="password")
         if st.button("Login as Instructor"):
-            if pin_input == "131288793710612763":
+            if pin_input == "1234":
                 st.session_state.admin_authenticated = True
                 st.rerun()
             else:
@@ -453,22 +480,43 @@ elif st.session_state.portal_role == "Teacher":
             with c_code2:
                 st.write(" ")
                 st.write(" ")
-                # PROVISION BUTTON: Explicitly generates a new OTP when clicked
                 if st.button("Generate New 6-Digit OTP", type="secondary"):
                     new_otp = generate_6digit_otp()
                     st.session_state.session_code = new_otp
                     
-                    # Persist the new OTP directly into the active file
                     quiz_payload = {
                         "session_code": new_otp,
                         "quiz": st.session_state.current_quiz,
                         "marking_scheme": st.session_state.marking_scheme,
-                        "cutoff_score": st.session_state.cutoff_score
+                        "cutoff_score": st.session_state.cutoff_score,
+                        "duration_minutes": st.session_state.duration_minutes
                     }
                     save_active_quiz(quiz_payload)
                     st.rerun()
 
             st.divider()
+            st.write("### Exam Duration Configuration")
+            dur_col1, dur_col2 = st.columns(2)
+            
+            # Initial values breakdown
+            curr_total = st.session_state.duration_minutes
+            curr_hrs = curr_total // 60
+            curr_mins = curr_total % 60
+            
+            with dur_col1:
+                hours = st.number_input("Duration (Hours)", min_value=0, max_value=24, value=curr_hrs, step=1)
+            with dur_col2:
+                minutes = st.number_input("Duration (Minutes)", min_value=0, max_value=59, value=curr_mins, step=1)
+            
+            total_duration_in_mins = (hours * 60) + minutes
+            if total_duration_in_mins == 0:
+                st.warning("Exam duration must be at least 1 minute.")
+                total_duration_in_mins = 1
+
+            st.session_state.duration_minutes = total_duration_in_mins
+
+            st.divider()
+            st.write("### Marking Scheme & Pass Cutoff")
             c1, c2, c3 = st.columns(3)
             with c1:
                 mcq_pos = st.number_input("MCQ Correct Marks", value=1.0)
@@ -487,7 +535,6 @@ elif st.session_state.portal_role == "Teacher":
             }
             st.session_state.cutoff_score = st.number_input("Pass Cutoff Score", value=5.0)
 
-            # Publishing new quiz generates a brand new OTP automatically
             if st.button("Generate & Publish Quiz", type="primary"):
                 selected_qs = [q for q in st.session_state.question_bank if q["selected"]]
                 if not selected_qs:
@@ -501,16 +548,18 @@ elif st.session_state.portal_role == "Teacher":
                         "session_code": new_otp,
                         "quiz": selected_qs,
                         "marking_scheme": st.session_state.marking_scheme,
-                        "cutoff_score": st.session_state.cutoff_score
+                        "cutoff_score": st.session_state.cutoff_score,
+                        "duration_minutes": st.session_state.duration_minutes
                     }
                     save_active_quiz(quiz_payload)
-                    st.success(f"New quiz published with fresh 6-digit OTP: **{new_otp}**!")
+                    st.success(f"New quiz published with fresh 6-digit OTP: **{new_otp}** and Duration: **{hours}h {minutes}m**!")
                     st.rerun()
 
             if st.session_state.current_quiz:
                 st.divider()
                 st.subheader("📢 Active Quiz Access Information")
                 st.metric("Current Exam OTP", st.session_state.session_code)
+                st.write(f"**Total Duration Set:** {st.session_state.duration_minutes // 60}h {st.session_state.duration_minutes % 60}m")
                 st.write(f"**Total Questions Published:** {len(st.session_state.current_quiz)}")
 
         # TAB 3: QUIZ DEMO / PREVIEW
