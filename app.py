@@ -9,10 +9,11 @@ import time
 st.set_page_config(page_title="National Testing Portal - Mock Exam", layout="wide")
 
 # ---------------------------------------------------------
-# FILE STORAGE FOR PERMANENT QUESTION BANK & ACTIVE QUIZ
+# FILE STORAGE FOR QUESTION BANK, ACTIVE QUIZ & RESULTS
 # ---------------------------------------------------------
 DB_FILE = "question_bank.json"
 QUIZ_FILE = "active_quiz.json"
+RESULTS_FILE = "student_results.json"
 
 def load_question_bank():
     if os.path.exists(DB_FILE):
@@ -39,6 +40,21 @@ def load_active_quiz():
 def save_active_quiz(quiz_data):
     with open(QUIZ_FILE, "w", encoding="utf-8") as f:
         json.dump(quiz_data, f, indent=4)
+
+def load_student_results():
+    if os.path.exists(RESULTS_FILE):
+        try:
+            with open(RESULTS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_student_result(record):
+    results = load_student_results()
+    results.append(record)
+    with open(RESULTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=4)
 
 def generate_6digit_otp():
     """Generates a fresh random 6-digit numeric OTP."""
@@ -79,7 +95,6 @@ if "marking_scheme" not in st.session_state:
 if "cutoff_score" not in st.session_state:
     st.session_state.cutoff_score = active_quiz_data.get("cutoff_score", 1.0)
 
-# Duration in minutes
 if "duration_minutes" not in st.session_state:
     st.session_state.duration_minutes = active_quiz_data.get("duration_minutes", 60)
 
@@ -88,6 +103,9 @@ if "quiz_active" not in st.session_state:
 
 if "quiz_submitted" not in st.session_state:
     st.session_state.quiz_submitted = False
+
+if "candidate_name" not in st.session_state:
+    st.session_state.candidate_name = ""
 
 if "start_time" not in st.session_state:
     st.session_state.start_time = None
@@ -101,8 +119,11 @@ if "question_states" not in st.session_state:
 if "demo_idx" not in st.session_state:
     st.session_state.demo_idx = 0
 
+if "result_logged" not in st.session_state:
+    st.session_state.result_logged = False
+
 # ---------------------------------------------------------
-# CSS FOR EXAM PALETTE & UI REPLICATION
+# CSS FOR EXAM PALETTE & VISUAL WARNING TIMERS
 # ---------------------------------------------------------
 st.markdown("""
     <style>
@@ -112,7 +133,15 @@ st.markdown("""
     .btn-not-answered { background-color: #dc3545; }
     .btn-not-visited { background-color: #e0e0e0; color: black; }
     .btn-review { background-color: #6f42c1; }
-    .timer-box { font-size: 18px; font-weight: bold; color: #dc3545; border: 2px solid #dc3545; padding: 6px 12px; border-radius: 6px; text-align: center; }
+    
+    /* Timer Styles */
+    .timer-normal { font-size: 20px; font-weight: bold; color: #003366; border: 2px solid #003366; padding: 8px 12px; border-radius: 6px; text-align: center; background-color: #f0f4f8; }
+    .timer-warning { font-size: 20px; font-weight: bold; color: #d97706; border: 2px solid #d97706; padding: 8px 12px; border-radius: 6px; text-align: center; background-color: #fef3c7; }
+    .timer-critical { font-size: 20px; font-weight: bold; color: #dc2626; border: 2px solid #dc2626; padding: 8px 12px; border-radius: 6px; text-align: center; background-color: #fee2e2; animation: blinker 1s linear infinite; }
+    
+    @keyframes blinker {
+        50% { opacity: 0.5; }
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -131,7 +160,7 @@ if st.session_state.portal_role is None:
             st.rerun()
             
     with col2:
-        st.warning("### Instructor / Teacher Portal\nManage question bank, publish quizzes, and view exam demo.")
+        st.warning("### Instructor / Teacher Portal\nManage question bank, publish quizzes, view results & export candidate records.")
         if st.button("Enter Instructor Portal", use_container_width=True):
             st.session_state.portal_role = "Teacher"
             st.rerun()
@@ -148,6 +177,7 @@ elif st.session_state.portal_role == "Student":
             st.session_state.portal_role = None
             st.session_state.quiz_active = False
             st.session_state.quiz_submitted = False
+            st.session_state.result_logged = False
             st.rerun()
 
     latest_quiz_data = load_active_quiz()
@@ -212,6 +242,21 @@ elif st.session_state.portal_role == "Student":
                 "Marks Awarded": score
             })
 
+        # Save Attempt to File Once
+        if not st.session_state.result_logged:
+            record = {
+                "Candidate Name": st.session_state.candidate_name,
+                "OTP Used": valid_session_code,
+                "Submission Time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "Score Achieved": round(total_score, 2),
+                "Max Marks": round(max_possible, 2),
+                "Cutoff": cutoff,
+                "Passed": "Yes" if total_score >= cutoff else "No"
+            }
+            save_student_result(record)
+            st.session_state.result_logged = True
+
+        st.subheader(f"Candidate: {st.session_state.candidate_name}")
         st.subheader(f"Total Score: {total_score:.2f} / {max_possible:.2f}")
 
         if total_score >= cutoff:
@@ -231,30 +276,17 @@ elif st.session_state.portal_role == "Student":
         
         if st.button("Start Examination", type="primary"):
             if input_code.strip() == valid_session_code and candidate_name.strip():
+                st.session_state.candidate_name = candidate_name.strip()
                 st.session_state.current_quiz = published_quiz
                 st.session_state.question_states = {i: "not_visited" for i in range(len(published_quiz))}
                 st.session_state.question_states[0] = "not_answered"
                 st.session_state.quiz_active = True
                 st.session_state.start_time = time.time()
+                st.session_state.result_logged = False
                 st.rerun()
             else:
                 st.error("Invalid Exam OTP Code or Candidate Name.")
     else:
-        # Calculate Remaining Time
-        elapsed_time = time.time() - st.session_state.start_time
-        remaining_secs = max(0, int(total_duration_secs - elapsed_time))
-
-        if remaining_secs <= 0:
-            st.session_state.quiz_submitted = True
-            st.error("Time is up! Your exam has been automatically submitted.")
-            st.rerun()
-
-        # Format Timer
-        rem_hrs = remaining_secs // 3600
-        rem_mins = (remaining_secs % 3600) // 60
-        rem_secs = remaining_secs % 60
-        timer_str = f"⏱️ Time Remaining: {rem_hrs:02d}:{rem_mins:02d}:{rem_secs:02d}"
-
         if "curr_idx" not in st.session_state:
             st.session_state.curr_idx = 0
 
@@ -262,8 +294,9 @@ elif st.session_state.portal_role == "Student":
         col_main, col_palette = st.columns([3, 1])
 
         with col_palette:
-            st.markdown(f'<div class="timer-box">{timer_str}</div>', unsafe_allow_html=True)
-            st.write(" ")
+            # Placeholder for continuous high-precision timer
+            timer_ph = st.empty()
+            
             st.subheader("Question Palette")
             grid_cols = st.columns(4)
             for i in range(len(st.session_state.current_quiz)):
@@ -335,6 +368,39 @@ elif st.session_state.portal_role == "Student":
                     st.session_state.curr_idx += 1
                 st.rerun()
 
+        # CONTINUOUS HIGH-PRECISION TIMER LOOP (Hundredths/60ths of a second)
+        elapsed_time = time.time() - st.session_state.start_time
+        remaining_secs = max(0.0, total_duration_secs - elapsed_time)
+
+        if remaining_secs <= 0.0:
+            st.session_state.quiz_submitted = True
+            st.error("Time is up! Your exam has been automatically submitted.")
+            st.rerun()
+
+        # Format Millisecond/Centisecond timer
+        hrs = int(remaining_secs // 3600)
+        mins = int((remaining_secs % 3600) // 60)
+        secs = int(remaining_secs % 60)
+        fraction = int((remaining_secs - int(remaining_secs)) * 100) # 100ths of a second
+        
+        timer_text = f"⏱️ Time Remaining: {hrs:02d}:{mins:02d}:{secs:02d}.{fraction:02d}"
+
+        # Dynamic Non-Audio Color Warnings
+        if remaining_secs < 60:  # Under 1 minute (Critical Red Flash)
+            css_class = "timer-critical"
+            warning_msg = "⚠️ LESS THAN 1 MINUTE REMAINING!"
+        elif remaining_secs < 300:  # Under 5 minutes (Amber Warning)
+            css_class = "timer-warning"
+            warning_msg = "⚠️ Time is running low!"
+        else:
+            css_class = "timer-normal"
+            warning_msg = ""
+
+        timer_ph.markdown(
+            f'<div class="{css_class}">{timer_text}<br/><small>{warning_msg}</small></div>', 
+            unsafe_allow_html=True
+        )
+
 # =========================================================
 # 2. INSTRUCTOR / TEACHER PORTAL
 # =========================================================
@@ -345,14 +411,19 @@ elif st.session_state.portal_role == "Teacher":
         st.title("Instructor Authentication")
         pin_input = st.text_input("Enter Admin PIN to access Instructor Portal:", type="password")
         if st.button("Login as Instructor"):
-            if pin_input == "1234":
+            if pin_input == "131288793710612763":
                 st.session_state.admin_authenticated = True
                 st.rerun()
             else:
                 st.error("Incorrect PIN. Access denied.")
     else:
         st.title("Instructor Control Center")
-        tab1, tab2, tab3 = st.tabs(["Question Bank Management", "Quiz Configuration", "Quiz Demo / Preview"])
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "Question Bank Management", 
+            "Quiz Configuration", 
+            "Student Attempt Data & Export", 
+            "Quiz Demo / Preview"
+        ])
 
         # TAB 1: QUESTION BANK MANAGEMENT
         with tab1:
@@ -498,7 +569,6 @@ elif st.session_state.portal_role == "Teacher":
             st.write("### Exam Duration Configuration")
             dur_col1, dur_col2 = st.columns(2)
             
-            # Initial values breakdown
             curr_total = st.session_state.duration_minutes
             curr_hrs = curr_total // 60
             curr_mins = curr_total % 60
@@ -562,8 +632,31 @@ elif st.session_state.portal_role == "Teacher":
                 st.write(f"**Total Duration Set:** {st.session_state.duration_minutes // 60}h {st.session_state.duration_minutes % 60}m")
                 st.write(f"**Total Questions Published:** {len(st.session_state.current_quiz)}")
 
-        # TAB 3: QUIZ DEMO / PREVIEW
+        # TAB 3: STUDENT ATTEMPT DATA & EXPORT
         with tab3:
+            st.subheader("Student Examination Records & Performance Log")
+            results_data = load_student_results()
+            
+            if results_data:
+                df_results = pd.DataFrame(results_data)
+                
+                st.write(f"**Total Submissions Recorded:** {len(df_results)}")
+                st.dataframe(df_results, use_container_width=True)
+
+                # Export to CSV Option
+                csv_data = df_results.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Download Student Performance Data (CSV)",
+                    data=csv_data,
+                    file_name="student_quiz_results.csv",
+                    mime="text/csv",
+                    type="primary"
+                )
+            else:
+                st.info("No student attempt records recorded yet.")
+
+        # TAB 4: QUIZ DEMO / PREVIEW
+        with tab4:
             st.subheader("Quiz Demo / Preview")
             demo_quiz = st.session_state.current_quiz
 
