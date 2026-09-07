@@ -1,60 +1,79 @@
 import streamlit as st
 import pandas as pd
-import json
-import os
 import random
 import time
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 # Page configuration
 st.set_page_config(page_title="Testing Portal - Mock Exam", layout="wide")
 
 # ---------------------------------------------------------
-# FILE STORAGE FOR QUESTION BANK, ACTIVE QUIZ & RESULTS
+# FIREBASE INITIALIZATION & DATABASE OPERATIONS
 # ---------------------------------------------------------
-DB_FILE = "question_bank.json"
-QUIZ_FILE = "active_quiz.json"
-RESULTS_FILE = "student_results.json"
+if not firebase_admin._apps:
+    try:
+        firebase_dict = dict(st.secrets["firebase"])
+        firebase_dict["private_key"] = firebase_dict["private_key"].replace("\\n", "\n")
+        cred = credentials.Certificate(firebase_dict)
+        firebase_admin.initialize_app(cred)
+    except Exception as e:
+        st.error(f"Failed to initialize Firebase credentials from Secrets. Error: {e}")
+
+db = firestore.client()
 
 def load_question_bank():
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return []
-    return []
+    """Fetch all stored questions from Firebase."""
+    try:
+        docs = db.collection("question_bank").stream()
+        return [doc.to_dict() for doc in docs]
+    except Exception as e:
+        st.error(f"Error fetching question bank from Firebase: {e}")
+        return []
 
 def save_question_bank(data):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
+    """Overwrite/Sync question bank repository in Firebase."""
+    try:
+        docs = db.collection("question_bank").list_documents()
+        for doc in docs:
+            doc.delete()
+        for idx, q in enumerate(data):
+            db.collection("question_bank").document(str(q.get("id", idx + 1))).set(q)
+    except Exception as e:
+        st.error(f"Error updating question bank in Firebase: {e}")
 
 def load_active_quiz():
-    if os.path.exists(QUIZ_FILE):
-        try:
-            with open(QUIZ_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
+    """Fetch active quiz settings and OTP from Firebase."""
+    try:
+        doc = db.collection("active_quiz").document("current_config").get()
+        if doc.exists:
+            return doc.to_dict()
+    except Exception as e:
+        st.error(f"Error loading active quiz from Firebase: {e}")
     return {}
 
 def save_active_quiz(quiz_data):
-    with open(QUIZ_FILE, "w", encoding="utf-8") as f:
-        json.dump(quiz_data, f, indent=4)
+    """Save/Publish active quiz configuration to Firebase."""
+    try:
+        db.collection("active_quiz").document("current_config").set(quiz_data)
+    except Exception as e:
+        st.error(f"Error publishing quiz to Firebase: {e}")
 
 def load_student_results():
-    if os.path.exists(RESULTS_FILE):
-        try:
-            with open(RESULTS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return []
-    return []
+    """Fetch all student exam results from Firebase."""
+    try:
+        docs = db.collection("student_results").stream()
+        return [doc.to_dict() for doc in docs]
+    except Exception as e:
+        st.error(f"Error loading student results from Firebase: {e}")
+        return []
 
 def save_student_result(record):
-    results = load_student_results()
-    results.append(record)
-    with open(RESULTS_FILE, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=4)
+    """Save a candidate submission record to Firebase."""
+    try:
+        db.collection("student_results").add(record)
+    except Exception as e:
+        st.error(f"Error recording submission to Firebase: {e}")
 
 def generate_6digit_otp():
     """Generates a fresh random 6-digit numeric OTP."""
@@ -242,7 +261,6 @@ elif st.session_state.portal_role == "Student":
                 "Marks Awarded": score
             })
 
-        # Save Attempt to File Once
         if not st.session_state.result_logged:
             record = {
                 "Candidate Name": st.session_state.candidate_name,
@@ -294,7 +312,6 @@ elif st.session_state.portal_role == "Student":
         col_main, col_palette = st.columns([3, 1])
 
         with col_palette:
-            # Placeholder for continuous high-precision timer
             timer_ph = st.empty()
             
             st.subheader("Question Palette")
@@ -368,7 +385,7 @@ elif st.session_state.portal_role == "Student":
                     st.session_state.curr_idx += 1
                 st.rerun()
 
-        # CONTINUOUS HIGH-PRECISION TIMER LOOP (Hundredths/60ths of a second)
+        # CONTINUOUS HIGH-PRECISION TIMER LOOP
         elapsed_time = time.time() - st.session_state.start_time
         remaining_secs = max(0.0, total_duration_secs - elapsed_time)
 
@@ -377,19 +394,17 @@ elif st.session_state.portal_role == "Student":
             st.error("Time is up! Your exam has been automatically submitted.")
             st.rerun()
 
-        # Format Millisecond/Centisecond timer
         hrs = int(remaining_secs // 3600)
         mins = int((remaining_secs % 3600) // 60)
         secs = int(remaining_secs % 60)
-        fraction = int((remaining_secs - int(remaining_secs)) * 100) # 100ths of a second
+        fraction = int((remaining_secs - int(remaining_secs)) * 100)
         
         timer_text = f"⏱️ Time Remaining: {hrs:02d}:{mins:02d}:{secs:02d}.{fraction:02d}"
 
-        # Dynamic Non-Audio Color Warnings
-        if remaining_secs < 60:  # Under 1 minute (Critical Red Flash)
+        if remaining_secs < 60:
             css_class = "timer-critical"
             warning_msg = "⚠️ LESS THAN 1 MINUTE REMAINING!"
-        elif remaining_secs < 300:  # Under 5 minutes (Amber Warning)
+        elif remaining_secs < 300:
             css_class = "timer-warning"
             warning_msg = "⚠️ Time is running low!"
         else:
@@ -493,11 +508,11 @@ elif st.session_state.portal_role == "Teacher":
                         st.session_state.question_bank[st.session_state.editing_idx] = updated_data
                         st.session_state.editing_idx = None
                         save_question_bank(st.session_state.question_bank)
-                        st.success("Question updated successfully!")
+                        st.success("Question updated successfully in Firebase!")
                     else:
                         st.session_state.question_bank.append(updated_data)
                         save_question_bank(st.session_state.question_bank)
-                        st.success("Question successfully added!")
+                        st.success("Question successfully added to Firebase!")
                     st.rerun()
 
             if editing:
@@ -622,7 +637,7 @@ elif st.session_state.portal_role == "Teacher":
                         "duration_minutes": st.session_state.duration_minutes
                     }
                     save_active_quiz(quiz_payload)
-                    st.success(f"New quiz published with fresh 6-digit OTP: **{new_otp}** and Duration: **{hours}h {minutes}m**!")
+                    st.success(f"New quiz published to Firebase with fresh OTP: **{new_otp}** and Duration: **{hours}h {minutes}m**!")
                     st.rerun()
 
             if st.session_state.current_quiz:
@@ -643,7 +658,6 @@ elif st.session_state.portal_role == "Teacher":
                 st.write(f"**Total Submissions Recorded:** {len(df_results)}")
                 st.dataframe(df_results, use_container_width=True)
 
-                # Export to CSV Option
                 csv_data = df_results.to_csv(index=False).encode('utf-8')
                 st.download_button(
                     label="📥 Download Student Performance Data (CSV)",
@@ -653,7 +667,7 @@ elif st.session_state.portal_role == "Teacher":
                     type="primary"
                 )
             else:
-                st.info("No student attempt records recorded yet.")
+                st.info("No student attempt records recorded in Firebase yet.")
 
         # TAB 4: QUIZ DEMO / PREVIEW
         with tab4:
