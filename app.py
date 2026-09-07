@@ -6,7 +6,7 @@ import random
 import time
 
 # Page configuration
-st.set_page_config(page_title="National Testing Portal - Mock Exam", layout="wide")
+st.set_page_config(page_title="Testing Portal - Mock Exam", layout="wide")
 
 # ---------------------------------------------------------
 # FILE STORAGE FOR QUESTION BANK, ACTIVE QUIZ & RESULTS
@@ -149,7 +149,7 @@ st.markdown("""
 # LANDING PAGE: ROLE SELECTION
 # ---------------------------------------------------------
 if st.session_state.portal_role is None:
-    st.markdown('<div class="exam-header">National Testing Portal - Online Examination System</div>', unsafe_allow_html=True)
+    st.markdown('<div class="exam-header">Testing Portal - Online Examination System</div>', unsafe_allow_html=True)
     st.subheader("Welcome! Please select your portal type to continue:")
     
     col1, col2 = st.columns(2)
@@ -171,7 +171,7 @@ if st.session_state.portal_role is None:
 elif st.session_state.portal_role == "Student":
     head_col1, head_col2 = st.columns([6, 1])
     with head_col1:
-        st.markdown('<div class="exam-header">IIT JAM / GATE / CSIR NET Student Examination Portal</div>', unsafe_allow_html=True)
+        st.markdown('<div class="exam-header">Student Examination Portal</div>', unsafe_allow_html=True)
     with head_col2:
         if st.button("Change Portal"):
             st.session_state.portal_role = None
