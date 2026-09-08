@@ -22,6 +22,7 @@ if not firebase_admin._apps:
 
 db = firestore.client()
 
+@st.cache_data(ttl=60)
 def load_question_bank():
     """Fetch all stored questions from Firebase."""
     try:
@@ -32,13 +33,19 @@ def load_question_bank():
         return []
 
 def save_question_bank(data):
-    """Overwrite/Sync question bank repository in Firebase."""
+    """Sync question bank repository in Firebase using batch operations."""
     try:
+        batch = db.batch()
         docs = db.collection("question_bank").list_documents()
         for doc in docs:
-            doc.delete()
+            batch.delete(doc)
+        
         for idx, q in enumerate(data):
-            db.collection("question_bank").document(str(q.get("id", idx + 1))).set(q)
+            doc_ref = db.collection("question_bank").document(str(q.get("id", idx + 1)))
+            batch.set(doc_ref, q)
+        
+        batch.commit()
+        st.cache_data.clear()
     except Exception as e:
         st.error(f"Error updating question bank in Firebase: {e}")
 
@@ -56,6 +63,7 @@ def save_active_quiz(quiz_data):
     """Save/Publish active quiz configuration to Firebase."""
     try:
         db.collection("active_quiz").document("current_config").set(quiz_data)
+        st.cache_data.clear()
     except Exception as e:
         st.error(f"Error publishing quiz to Firebase: {e}")
 
@@ -96,8 +104,14 @@ active_quiz_data = load_active_quiz()
 if "editing_idx" not in st.session_state:
     st.session_state.editing_idx = None
 
+if "demo_idx" not in st.session_state:
+    st.session_state.demo_idx = 0
+
 if "current_quiz" not in st.session_state:
     st.session_state.current_quiz = active_quiz_data.get("quiz", [])
+
+if "randomize_questions" not in st.session_state:
+    st.session_state.randomize_questions = active_quiz_data.get("randomize_questions", False)
 
 if "session_code" not in st.session_state:
     saved_code = active_quiz_data.get("session_code", None)
@@ -126,6 +140,9 @@ if "quiz_submitted" not in st.session_state:
 if "candidate_name" not in st.session_state:
     st.session_state.candidate_name = ""
 
+if "candidate_class" not in st.session_state:
+    st.session_state.candidate_class = ""
+
 if "start_time" not in st.session_state:
     st.session_state.start_time = None
 
@@ -135,32 +152,20 @@ if "user_responses" not in st.session_state:
 if "question_states" not in st.session_state:
     st.session_state.question_states = {}
 
-if "demo_idx" not in st.session_state:
-    st.session_state.demo_idx = 0
-
 if "result_logged" not in st.session_state:
     st.session_state.result_logged = False
 
 # ---------------------------------------------------------
-# CSS FOR EXAM PALETTE & VISUAL WARNING TIMERS
+# CSS STYLES FOR EXAM INTERFACE & TIMERS
 # ---------------------------------------------------------
 st.markdown("""
     <style>
     .exam-header { background-color: #003366; color: white; padding: 12px; font-size: 22px; font-weight: bold; text-align: center; margin-bottom: 20px;}
-    .status-btn { width: 100%; border: none; padding: 8px; margin: 2px; color: white; font-weight: bold; border-radius: 4px; }
-    .btn-answered { background-color: #28a745; }
-    .btn-not-answered { background-color: #dc3545; }
-    .btn-not-visited { background-color: #e0e0e0; color: black; }
-    .btn-review { background-color: #6f42c1; }
-    
-    /* Timer Styles */
-    .timer-normal { font-size: 20px; font-weight: bold; color: #003366; border: 2px solid #003366; padding: 8px 12px; border-radius: 6px; text-align: center; background-color: #f0f4f8; }
-    .timer-warning { font-size: 20px; font-weight: bold; color: #d97706; border: 2px solid #d97706; padding: 8px 12px; border-radius: 6px; text-align: center; background-color: #fef3c7; }
-    .timer-critical { font-size: 20px; font-weight: bold; color: #dc2626; border: 2px solid #dc2626; padding: 8px 12px; border-radius: 6px; text-align: center; background-color: #fee2e2; animation: blinker 1s linear infinite; }
-    
-    @keyframes blinker {
-        50% { opacity: 0.5; }
-    }
+    .timer-banner { font-size: 22px; font-weight: bold; font-family: monospace; padding: 12px; border-radius: 8px; text-align: center; margin-bottom: 15px; }
+    .timer-normal { color: #003366; border: 2px solid #003366; background-color: #f0f4f8; }
+    .timer-warning { color: #d97706; border: 2px solid #d97706; background-color: #fef3c7; }
+    .timer-critical { color: #dc2626; border: 2px solid #dc2626; background-color: #fee2e2; animation: blinker 0.8s linear infinite; }
+    @keyframes blinker { 50% { opacity: 0.6; } }
     </style>
 """, unsafe_allow_html=True)
 
@@ -179,7 +184,7 @@ if st.session_state.portal_role is None:
             st.rerun()
             
     with col2:
-        st.warning("### Instructor / Teacher Portal\nManage question bank, publish quizzes, view results & export candidate records.")
+        st.warning("### Instructor / Teacher Portal\nManage question bank, publish quizzes, view results & preview tests.")
         if st.button("Enter Instructor Portal", use_container_width=True):
             st.session_state.portal_role = "Teacher"
             st.rerun()
@@ -206,6 +211,7 @@ elif st.session_state.portal_role == "Student":
 
     if not published_quiz:
         st.warning("No active quiz available at the moment. Please ask your instructor to configure and publish a test.")
+    
     elif st.session_state.quiz_submitted:
         st.title("Final Exam Performance & Analysis")
         
@@ -213,7 +219,7 @@ elif st.session_state.portal_role == "Student":
         max_possible = 0.0
         details = []
 
-        active_quiz = published_quiz
+        active_quiz = st.session_state.current_quiz
         marking_scheme = latest_quiz_data.get("marking_scheme", st.session_state.marking_scheme)
         cutoff = latest_quiz_data.get("cutoff_score", st.session_state.cutoff_score)
 
@@ -254,8 +260,9 @@ elif st.session_state.portal_role == "Student":
             total_score += score
             details.append({
                 "Q. No": idx + 1,
+                "Class/Subject": f"{q.get('class_name', 'N/A')} / {q.get('subject_topic', 'N/A')}",
                 "Type": q_type,
-                "Your Answer": str(user_ans),
+                "Your Answer": str(user_ans) if user_ans else "None",
                 "Correct Answer": str(q["correct"]),
                 "Status": status,
                 "Marks Awarded": score
@@ -264,6 +271,7 @@ elif st.session_state.portal_role == "Student":
         if not st.session_state.result_logged:
             record = {
                 "Candidate Name": st.session_state.candidate_name,
+                "Class / Batch": st.session_state.candidate_class,
                 "OTP Used": valid_session_code,
                 "Submission Time": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "Score Achieved": round(total_score, 2),
@@ -274,7 +282,7 @@ elif st.session_state.portal_role == "Student":
             save_student_result(record)
             st.session_state.result_logged = True
 
-        st.subheader(f"Candidate: {st.session_state.candidate_name}")
+        st.subheader(f"Candidate: {st.session_state.candidate_name} | Class: {st.session_state.candidate_class}")
         st.subheader(f"Total Score: {total_score:.2f} / {max_possible:.2f}")
 
         if total_score >= cutoff:
@@ -291,19 +299,29 @@ elif st.session_state.portal_role == "Student":
         
         input_code = st.text_input("Enter 6-Digit Exam OTP Code:")
         candidate_name = st.text_input("Candidate Name:")
+        candidate_class = st.text_input("Class / Batch Name (e.g. Class 10 - Section A):")
         
         if st.button("Start Examination", type="primary"):
-            if input_code.strip() == valid_session_code and candidate_name.strip():
+            if input_code.strip() == valid_session_code and candidate_name.strip() and candidate_class.strip():
                 st.session_state.candidate_name = candidate_name.strip()
-                st.session_state.current_quiz = published_quiz
-                st.session_state.question_states = {i: "not_visited" for i in range(len(published_quiz))}
+                st.session_state.candidate_class = candidate_class.strip()
+                
+                # Check for question randomization setting
+                quiz_to_assign = list(published_quiz)
+                if latest_quiz_data.get("randomize_questions", False):
+                    random.shuffle(quiz_to_assign)
+                
+                st.session_state.current_quiz = quiz_to_assign
+                st.session_state.user_responses = {}
+                st.session_state.question_states = {i: "not_visited" for i in range(len(quiz_to_assign))}
                 st.session_state.question_states[0] = "not_answered"
+                st.session_state.curr_idx = 0
                 st.session_state.quiz_active = True
                 st.session_state.start_time = time.time()
                 st.session_state.result_logged = False
                 st.rerun()
             else:
-                st.error("Invalid Exam OTP Code or Candidate Name.")
+                st.error("Invalid Exam OTP Code, Candidate Name, or Class.")
     else:
         if "curr_idx" not in st.session_state:
             st.session_state.curr_idx = 0
@@ -311,29 +329,41 @@ elif st.session_state.portal_role == "Student":
         curr_q = st.session_state.current_quiz[st.session_state.curr_idx]
         col_main, col_palette = st.columns([3, 1])
 
-        with col_palette:
-            timer_ph = st.empty()
-            
-            st.subheader("Question Palette")
-            grid_cols = st.columns(4)
-            for i in range(len(st.session_state.current_quiz)):
-                col_i = grid_cols[i % 4]
-                state = st.session_state.question_states.get(i, "not_visited")
-                label = f"{i+1}"
-                
-                if col_i.button(label, key=f"pal_{i}", use_container_width=True):
-                    st.session_state.curr_idx = i
-                    if st.session_state.question_states[i] == "not_visited":
-                        st.session_state.question_states[i] = "not_answered"
-                    st.rerun()
+        with col_main:
+            # TIMER DISPLAYED RIGHT ABOVE THE QUESTION
+            elapsed_time = time.time() - st.session_state.start_time
+            remaining_secs = max(0.0, total_duration_secs - elapsed_time)
 
-            st.divider()
-            if st.button("Submit Exam Final", type="primary", use_container_width=True):
+            if remaining_secs <= 0.0:
                 st.session_state.quiz_submitted = True
                 st.rerun()
 
-        with col_main:
+            hrs = int(remaining_secs // 3600)
+            mins = int((remaining_secs % 3600) // 60)
+            secs = int(remaining_secs % 60)
+            millis = int((remaining_secs * 1000) % 1000)
+            micros = int((remaining_secs * 1000000) % 1000)
+
+            timer_text = f"⏱️ Time Remaining: {hrs:02d}:{mins:02d}:{secs:02d}:{millis:03d}:{micros:03d}"
+
+            if remaining_secs < 60:
+                css_class = "timer-critical"
+                warning_msg = " ⚠️ LESS THAN 1 MINUTE REMAINING!"
+            elif remaining_secs < 300:
+                css_class = "timer-warning"
+                warning_msg = " ⚠️ Time is running low!"
+            else:
+                css_class = "timer-normal"
+                warning_msg = ""
+
+            st.markdown(
+                f'<div class="timer-banner {css_class}">{timer_text}<span style="font-size:14px;">{warning_msg}</span></div>', 
+                unsafe_allow_html=True
+            )
+
             st.markdown(f"### Question No. {st.session_state.curr_idx + 1} ({curr_q['type']})")
+            if curr_q.get("class_name") or curr_q.get("subject_topic"):
+                st.caption(f"Class: **{curr_q.get('class_name', 'General')}** | Topic: **{curr_q.get('subject_topic', 'General')}**")
             st.markdown(f"**{curr_q['text']}**")
             st.divider()
 
@@ -371,6 +401,8 @@ elif st.session_state.portal_role == "Student":
                 st.session_state.question_states[q_idx] = "answered"
                 if st.session_state.curr_idx < len(st.session_state.current_quiz) - 1:
                     st.session_state.curr_idx += 1
+                    if st.session_state.question_states[st.session_state.curr_idx] == "not_visited":
+                        st.session_state.question_states[st.session_state.curr_idx] = "not_answered"
                 st.rerun()
 
             if b2.button("Clear Response"):
@@ -383,38 +415,38 @@ elif st.session_state.portal_role == "Student":
                 st.session_state.question_states[q_idx] = "review"
                 if st.session_state.curr_idx < len(st.session_state.current_quiz) - 1:
                     st.session_state.curr_idx += 1
+                    if st.session_state.question_states[st.session_state.curr_idx] == "not_visited":
+                        st.session_state.question_states[st.session_state.curr_idx] = "not_answered"
                 st.rerun()
 
-        # CONTINUOUS HIGH-PRECISION TIMER LOOP
-        elapsed_time = time.time() - st.session_state.start_time
-        remaining_secs = max(0.0, total_duration_secs - elapsed_time)
+        with col_palette:
+            st.subheader("Question Palette")
+            st.caption("🟢 Answered | 🔴 Not Answered | 🟣 Review | ⚪ Not Visited")
 
-        if remaining_secs <= 0.0:
-            st.session_state.quiz_submitted = True
-            st.error("Time is up! Your exam has been automatically submitted.")
-            st.rerun()
+            grid_cols = st.columns(4)
+            for i in range(len(st.session_state.current_quiz)):
+                col_i = grid_cols[i % 4]
+                state = st.session_state.question_states.get(i, "not_visited")
+                
+                state_icons = {
+                    "answered": "🟢",
+                    "not_answered": "🔴",
+                    "review": "🟣",
+                    "not_visited": "⚪"
+                }
+                btn_type = "primary" if i == st.session_state.curr_idx else "secondary"
+                label = f"{state_icons.get(state, '⚪')} {i+1}"
+                
+                if col_i.button(label, key=f"pal_{i}", type=btn_type, use_container_width=True):
+                    st.session_state.curr_idx = i
+                    if st.session_state.question_states[i] == "not_visited":
+                        st.session_state.question_states[i] = "not_answered"
+                    st.rerun()
 
-        hrs = int(remaining_secs // 3600)
-        mins = int((remaining_secs % 3600) // 60)
-        secs = int(remaining_secs % 60)
-        fraction = int((remaining_secs - int(remaining_secs)) * 100)
-        
-        timer_text = f"⏱️ Time Remaining: {hrs:02d}:{mins:02d}:{secs:02d}.{fraction:02d}"
-
-        if remaining_secs < 60:
-            css_class = "timer-critical"
-            warning_msg = "⚠️ LESS THAN 1 MINUTE REMAINING!"
-        elif remaining_secs < 300:
-            css_class = "timer-warning"
-            warning_msg = "⚠️ Time is running low!"
-        else:
-            css_class = "timer-normal"
-            warning_msg = ""
-
-        timer_ph.markdown(
-            f'<div class="{css_class}">{timer_text}<br/><small>{warning_msg}</small></div>', 
-            unsafe_allow_html=True
-        )
+            st.divider()
+            if st.button("Submit Exam Final", type="primary", use_container_width=True):
+                st.session_state.quiz_submitted = True
+                st.rerun()
 
 # =========================================================
 # 2. INSTRUCTOR / TEACHER PORTAL
@@ -436,7 +468,7 @@ elif st.session_state.portal_role == "Teacher":
         tab1, tab2, tab3, tab4 = st.tabs([
             "Question Bank Management", 
             "Quiz Configuration", 
-            "Student Attempt Data & Export", 
+            "Student Attempt Data & Export",
             "Quiz Demo / Preview"
         ])
 
@@ -447,10 +479,18 @@ elif st.session_state.portal_role == "Teacher":
                 st.subheader(f"Edit Question #{st.session_state.editing_idx + 1}")
                 q_to_edit = st.session_state.question_bank[st.session_state.editing_idx]
             else:
-                st.subheader("Add New LaTeX Question")
+                st.subheader("Add New Question")
                 q_to_edit = None
 
             with st.form("question_form", clear_on_submit=False):
+                col_cat1, col_cat2 = st.columns(2)
+                with col_cat1:
+                    default_class = q_to_edit.get("class_name", "") if editing else ""
+                    class_name = st.text_input("Class / Grade (e.g. Class 10, Batch A)", value=default_class)
+                with col_cat2:
+                    default_sub = q_to_edit.get("subject_topic", "") if editing else ""
+                    subject_topic = st.text_input("Subject / Topic Name (e.g. Physics - Kinematics)", value=default_sub)
+
                 default_type = q_to_edit["type"] if editing else "MCQ"
                 type_options = ["MCQ", "MSQ", "NAT"]
                 type_idx = type_options.index(default_type) if default_type in type_options else 0
@@ -498,11 +538,13 @@ elif st.session_state.portal_role == "Teacher":
                 if submitted and q_text.strip():
                     updated_data = {
                         "id": q_to_edit["id"] if editing else len(st.session_state.question_bank) + 1,
+                        "class_name": class_name.strip(),
+                        "subject_topic": subject_topic.strip(),
                         "type": q_type,
                         "text": q_text,
                         "options": opts,
                         "correct": correct_opts if q_type in ["MCQ", "MSQ"] else nat_answer,
-                        "selected": q_to_edit["selected"] if editing else False
+                        "selected": q_to_edit.get("selected", False) if editing else False
                     }
                     if editing:
                         st.session_state.question_bank[st.session_state.editing_idx] = updated_data
@@ -522,14 +564,31 @@ elif st.session_state.portal_role == "Teacher":
 
             st.divider()
             st.subheader("Question Bank Repository")
+
+            # Filters for Class & Topic
             if st.session_state.question_bank:
-                to_delete = []
+                classes = sorted(list({q.get("class_name", "Unassigned") for q in st.session_state.question_bank if q.get("class_name")}))
+                topics = sorted(list({q.get("subject_topic", "Unassigned") for q in st.session_state.question_bank if q.get("subject_topic")}))
+                
+                fcol1, fcol2 = st.columns(2)
+                filter_class = fcol1.selectbox("Filter by Class", ["All"] + classes)
+                filter_topic = fcol2.selectbox("Filter by Subject/Topic", ["All"] + topics)
+
+                filtered_qs = []
                 for idx, q in enumerate(st.session_state.question_bank):
+                    c_match = (filter_class == "All") or (q.get("class_name") == filter_class)
+                    t_match = (filter_topic == "All") or (q.get("subject_topic") == filter_topic)
+                    if c_match and t_match:
+                        filtered_qs.append((idx, q))
+
+                to_delete = []
+                for idx, q in filtered_qs:
                     cols = st.columns([0.5, 0.5, 6, 1, 1])
-                    q["selected"] = cols[0].checkbox("", value=q["selected"], key=f"select_{idx}")
+                    q["selected"] = cols[0].checkbox("", value=q.get("selected", False), key=f"select_{idx}")
                     cols[1].write(f"**Q{idx+1} ({q['type']})**")
                     
                     with cols[2]:
+                        st.write(f"**Class:** `{q.get('class_name', 'N/A')}` | **Topic:** `{q.get('subject_topic', 'N/A')}`")
                         st.write(f"**Question:** {q['text']}")
                         if q['type'] in ["MCQ", "MSQ"]:
                             labels = ["A", "B", "C", "D"]
@@ -573,12 +632,21 @@ elif st.session_state.portal_role == "Teacher":
                     quiz_payload = {
                         "session_code": new_otp,
                         "quiz": st.session_state.current_quiz,
+                        "randomize_questions": st.session_state.randomize_questions,
                         "marking_scheme": st.session_state.marking_scheme,
                         "cutoff_score": st.session_state.cutoff_score,
                         "duration_minutes": st.session_state.duration_minutes
                     }
                     save_active_quiz(quiz_payload)
                     st.rerun()
+
+            st.divider()
+            st.write("### Anti-Cheating & Randomization Controls")
+            st.session_state.randomize_questions = st.toggle(
+                "🔀 Randomize Question Sequence per Candidate", 
+                value=st.session_state.randomize_questions,
+                help="When enabled, each candidate will get questions shuffled in a different order."
+            )
 
             st.divider()
             st.write("### Exam Duration Configuration")
@@ -621,17 +689,19 @@ elif st.session_state.portal_role == "Teacher":
             st.session_state.cutoff_score = st.number_input("Pass Cutoff Score", value=5.0)
 
             if st.button("Generate & Publish Quiz", type="primary"):
-                selected_qs = [q for q in st.session_state.question_bank if q["selected"]]
+                selected_qs = [q for q in st.session_state.question_bank if q.get("selected", False)]
                 if not selected_qs:
                     st.warning("Please select at least one question from the Question Bank tab using checkboxes.")
                 else:
                     new_otp = generate_6digit_otp()
                     st.session_state.session_code = new_otp
                     st.session_state.current_quiz = selected_qs
+                    st.session_state.demo_idx = 0
                     
                     quiz_payload = {
                         "session_code": new_otp,
                         "quiz": selected_qs,
+                        "randomize_questions": st.session_state.randomize_questions,
                         "marking_scheme": st.session_state.marking_scheme,
                         "cutoff_score": st.session_state.cutoff_score,
                         "duration_minutes": st.session_state.duration_minutes
@@ -644,6 +714,7 @@ elif st.session_state.portal_role == "Teacher":
                 st.divider()
                 st.subheader("📢 Active Quiz Access Information")
                 st.metric("Current Exam OTP", st.session_state.session_code)
+                st.write(f"**Randomization Status:** {'Enabled' if st.session_state.randomize_questions else 'Disabled'}")
                 st.write(f"**Total Duration Set:** {st.session_state.duration_minutes // 60}h {st.session_state.duration_minutes % 60}m")
                 st.write(f"**Total Questions Published:** {len(st.session_state.current_quiz)}")
 
@@ -654,15 +725,23 @@ elif st.session_state.portal_role == "Teacher":
             
             if results_data:
                 df_results = pd.DataFrame(results_data)
+
+                # Class Filter for Results Tab
+                if "Class / Batch" in df_results.columns:
+                    avail_classes = ["All Classes"] + sorted(df_results["Class / Batch"].dropna().unique().tolist())
+                    selected_class_filter = st.selectbox("Filter Class Performance Sheet", avail_classes)
+                    if selected_class_filter != "All Classes":
+                        df_results = df_results[df_results["Class / Batch"] == selected_class_filter]
                 
-                st.write(f"**Total Submissions Recorded:** {len(df_results)}")
+                st.write(f"**Total Submissions Displayed:** {len(df_results)}")
                 st.dataframe(df_results, use_container_width=True)
 
+                # Export to CSV compatible with Google Sheets & Excel
                 csv_data = df_results.to_csv(index=False).encode('utf-8')
                 st.download_button(
-                    label="📥 Download Student Performance Data (CSV)",
+                    label="📥 Download Class Results (Google Sheets / Excel compatible CSV)",
                     data=csv_data,
-                    file_name="student_quiz_results.csv",
+                    file_name="class_quiz_results.csv",
                     mime="text/csv",
                     type="primary"
                 )
@@ -679,6 +758,9 @@ elif st.session_state.portal_role == "Teacher":
             else:
                 st.caption("This is an interactive preview mode showing how students will view the published exam interface.")
                 
+                if st.session_state.demo_idx >= len(demo_quiz):
+                    st.session_state.demo_idx = 0
+
                 demo_col_main, demo_col_palette = st.columns([3, 1])
 
                 with demo_col_palette:
@@ -686,21 +768,24 @@ elif st.session_state.portal_role == "Teacher":
                     grid_cols = st.columns(4)
                     for i in range(len(demo_quiz)):
                         col_i = grid_cols[i % 4]
+                        btn_type = "primary" if i == st.session_state.demo_idx else "secondary"
                         label = f"{i+1}"
-                        if col_i.button(label, key=f"demo_pal_{i}", use_container_width=True):
+                        if col_i.button(label, key=f"demo_pal_{i}", type=btn_type, use_container_width=True):
                             st.session_state.demo_idx = i
                             st.rerun()
 
                 with demo_col_main:
                     curr_demo_q = demo_quiz[st.session_state.demo_idx]
                     st.markdown(f"### Question No. {st.session_state.demo_idx + 1} ({curr_demo_q['type']})")
+                    if curr_demo_q.get("class_name") or curr_demo_q.get("subject_topic"):
+                        st.caption(f"Class: **{curr_demo_q.get('class_name', 'General')}** | Topic: **{curr_demo_q.get('subject_topic', 'General')}**")
                     st.markdown(f"**{curr_demo_q['text']}**")
                     st.divider()
 
                     if curr_demo_q["type"] in ["MCQ", "MSQ"]:
                         labels = ["Option A", "Option B", "Option C", "Option D"]
                         for lbl, opt in zip(labels, curr_demo_q["options"]):
-                            st.write(f"- **{lbl}:** {opt}")
+                            st.markdown(f"- **{lbl}:** {opt}")
                     elif curr_demo_q["type"] == "NAT":
                         st.info("Students will enter a numerical answer in a text box.")
 
